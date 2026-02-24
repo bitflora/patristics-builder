@@ -38,7 +38,9 @@ The database is a **pure index** — no passage text is stored in it. All text l
 
 ## JSON Output
 
-### Per-chapter: `data/static/{book-slug}/{chapter}.json`
+All output files are gzip-compressed (`.json.gz`).
+
+### Per-chapter: `data/static/{book-slug}/{chapter}.json.gz`
 ```json
 {
   "book": "Romans",
@@ -58,7 +60,7 @@ The database is a **pure index** — no passage text is stored in it. All text l
 - `v: "13-17"` → verse range
 - `w` → 0-based index into the `works` array (deduplicates author/title metadata)
 
-### Index: `data/static/index.json`
+### Index: `data/static/index.json.gz`
 ```json
 {
   "books": [
@@ -68,11 +70,30 @@ The database is a **pure index** — no passage text is stored in it. All text l
     }
   ],
   "works": [
-    {"id": 1, "author": "John Owen", "title": "Mortification of Sin", "year": 1656}
+    {"id": 1, "author": "John Owen", "title": "Mortification of Sin", "year": 1656, "ref_count": 143}
   ]
 }
 ```
-Chapter counts in the index allow the viewer to display reference heatmaps without loading all chapter files.
+Chapter counts in the index allow the viewer to display reference heatmaps without loading all chapter files. `ref_count` on each work enables the Works view to show how many references each manuscript makes.
+
+### Per-work: `data/static/works/{id}.json.gz`
+```json
+{
+  "id": 5,
+  "author": "John Calvin",
+  "title": "Commentary on Romans",
+  "year": 1540,
+  "filename": "calvin_romans.txt",
+  "refs": [
+    {"book": "Genesis", "book_slug": "genesis", "chapter": 1, "v": "1",    "text": "..."},
+    {"book": "Romans",  "book_slug": "romans",  "chapter": 8, "v": "13",   "text": "..."},
+    {"book": "Romans",  "book_slug": "romans",  "chapter": 8, "v": null,   "text": "..."}
+  ]
+}
+```
+- `id` matches `manuscripts.id` in the database
+- `refs` are ordered by `book_slug`, `chapter`, `verse_start`
+- `v` follows the same rules as chapter files: `null` = whole chapter, `"13"` = single verse, `"13-17"` = range
 
 ## Passage Window
 

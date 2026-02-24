@@ -3,8 +3,9 @@ JSON builder: reads the SQLite database and generates static JSON files
 for the viewer.
 
 Outputs:
-  data/static/index.json              — book list with per-chapter ref counts
-  data/static/{book-slug}/{ch}.json   — all references for a chapter
+  data/static/index.json.gz              — book list with per-chapter ref counts
+  data/static/{book-slug}/{ch}.json.gz   — all references for a chapter
+  data/static/works/{id}.json.gz         — all references from a single work
 
 Usage:
   python src/builder.py               # build everything
@@ -16,6 +17,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -39,7 +41,6 @@ def _read_passage(filename: str, start: int, end: int) -> str:
     text = path.read_text(encoding="utf-8", errors="replace")
     snippet = text[start:end].strip()
     # Normalise whitespace (collapse multiple blank lines)
-    import re
     snippet = re.sub(r'\n{3,}', '\n\n', snippet)
     return snippet[:MAX_PASSAGE_CHARS]
 
@@ -128,7 +129,7 @@ def build_chapter(
 
 
 def build_index(conn, only_book: str | None = None) -> None:
-    """Write data/static/index.json."""
+    """Write data/static/index.json.gz."""
 
     # All (book_slug, chapter, count) tuples with at least one reference
     rows = conn.execute(
@@ -145,13 +146,25 @@ def build_index(conn, only_book: str | None = None) -> None:
     for r in rows:
         chapter_counts.setdefault(r["book_slug"], {})[r["chapter"]] = r["n"]
 
-    # All manuscript metadata for the global works list
+    # All manuscript metadata for the global works list, with ref counts
     works_rows = conn.execute(
-        "SELECT id, author, title, year, filename FROM manuscripts ORDER BY author, title"
+        """
+        SELECT m.id, m.author, m.title, m.year, m.filename,
+               COUNT(vr.id) AS ref_count
+        FROM manuscripts m
+        LEFT JOIN verse_refs vr ON vr.manuscript_id = m.id
+        GROUP BY m.id
+        ORDER BY m.author, m.title
+        """
     ).fetchall()
     global_works = [
-        {"id": r["id"], "author": r["author"] or "Unknown",
-         "title": r["title"] or r["filename"], "year": r["year"]}
+        {
+            "id": r["id"],
+            "author": r["author"] or "Unknown",
+            "title": r["title"] or r["filename"],
+            "year": r["year"],
+            "ref_count": r["ref_count"],
+        }
         for r in works_rows
     ]
 
@@ -206,9 +219,88 @@ def build_all(conn, only_book: str | None = None) -> None:
         if n:
             total_refs += n
             total_files += 1
-            print(f"  {slug}/{ch}.json  ({n} refs)")
+            print(f"  {slug}/{ch}.json.gz  ({n} refs)")
 
     print(f"\nBuilt {total_files} chapter files, {total_refs} total references.")
+
+
+def build_works(conn) -> None:
+    """Build per-work JSON files in data/static/works/{id}.json.gz"""
+    works_dir = STATIC_DIR / "works"
+    works_dir.mkdir(parents=True, exist_ok=True)
+
+    manuscripts = conn.execute(
+        "SELECT id, author, title, year, filename FROM manuscripts ORDER BY id"
+    ).fetchall()
+
+    total_files = 0
+    for m in manuscripts:
+        rows = conn.execute(
+            """
+            SELECT vr.book, vr.book_slug, vr.chapter,
+                   vr.verse_start, vr.verse_end,
+                   vr.passage_start_offset, vr.passage_end_offset
+            FROM verse_refs vr
+            WHERE vr.manuscript_id = ?
+            ORDER BY vr.book_slug, vr.chapter, vr.verse_start NULLS LAST
+            """,
+            (m["id"],),
+        ).fetchall()
+
+        if not rows:
+            continue
+
+        # Read the manuscript file once, then slice offsets
+        path = MANUSCRIPTS_DIR / m["filename"]
+        file_text = path.read_text(encoding="utf-8", errors="replace") if path.exists() else None
+
+        refs = []
+        for row in rows:
+            if file_text is not None:
+                snippet = file_text[row["passage_start_offset"]:row["passage_end_offset"]].strip()
+                snippet = re.sub(r'\n{3,}', '\n\n', snippet)
+                passage_text = snippet[:MAX_PASSAGE_CHARS]
+            else:
+                passage_text = f"[source file not found: {m['filename']}]"
+
+            refs.append({
+                "book": row["book"],
+                "book_slug": row["book_slug"],
+                "chapter": row["chapter"],
+                "v": _verse_label(row["verse_start"], row["verse_end"]),
+                "text": passage_text,
+            })
+
+        payload = {
+            "id": m["id"],
+            "author": m["author"] or "Unknown",
+            "title": m["title"] or m["filename"],
+            "year": m["year"],
+            "filename": m["filename"],
+            "refs": refs,
+        }
+
+        out_file = works_dir / f"{m['id']}.json.gz"
+        with gzip.open(out_file, "wt", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+
+        total_files += 1
+        print(f"  works/{m['id']}.json.gz  ({len(refs)} refs)")
+
+    print(f"\nBuilt {total_files} work files.")
+
+
+def cleanup_uncompressed() -> None:
+    """Delete any plain *.json files (not *.json.gz) under STATIC_DIR."""
+    if not STATIC_DIR.exists():
+        return
+    removed = 0
+    for p in STATIC_DIR.rglob("*.json"):
+        if p.suffix == ".json":   # .json.gz files have suffix ".gz"
+            p.unlink()
+            removed += 1
+    if removed:
+        print(f"Cleaned up {removed} uncompressed .json file(s).")
 
 
 def main() -> None:
@@ -228,6 +320,9 @@ def main() -> None:
     conn = get_connection()
     build_all(conn, only_book=args.book)
     build_index(conn, only_book=args.book)
+    if not args.book:          # skip per-work rebuild on partial builds
+        build_works(conn)
+    cleanup_uncompressed()     # always clean up uncompressed files
     conn.close()
 
 

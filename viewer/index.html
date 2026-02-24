@@ -13,12 +13,28 @@
   </header>
 
   <div id="app">
-    <!-- Left sidebar: book/chapter navigation -->
+    <!-- Left sidebar: navigation -->
     <nav id="sidebar">
-      <div id="search-wrap">
-        <input id="search" type="search" placeholder="Filter books…" aria-label="Filter books">
+      <div id="mode-tabs">
+        <button class="mode-tab active" data-mode="scripture">Scripture</button>
+        <button class="mode-tab" data-mode="works">Works</button>
       </div>
-      <div id="book-list" role="list"></div>
+
+      <!-- Scripture mode: book/chapter navigation -->
+      <div id="scripture-panel">
+        <div id="search-wrap">
+          <input id="search" type="search" placeholder="Filter books…" aria-label="Filter books">
+        </div>
+        <div id="book-list" role="list"></div>
+      </div>
+
+      <!-- Works mode: manuscript list -->
+      <div id="works-panel" hidden>
+        <div id="works-search-wrap">
+          <input id="works-search" type="search" placeholder="Filter works…" aria-label="Filter works">
+        </div>
+        <div id="works-list" role="list"></div>
+      </div>
     </nav>
 
     <!-- Main content area -->
@@ -38,6 +54,19 @@
           </div>
         </div>
         <div id="refs-list"></div>
+      </div>
+      <div id="work-view" hidden>
+        <div id="work-header">
+          <div id="work-title-block">
+            <h2 id="work-title"></h2>
+            <p id="work-meta"></p>
+          </div>
+          <div id="work-filter-bar">
+            <label for="book-filter">Filter by book:</label>
+            <select id="book-filter"><option value="">All books</option></select>
+          </div>
+        </div>
+        <div id="work-refs-list"></div>
       </div>
     </main>
   </div>

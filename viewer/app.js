@@ -2,8 +2,9 @@
  * Patristics Viewer — static SPA
  *
  * Expects data files at:
- *   ../data/static/index.json
- *   ../data/static/{book-slug}/{chapter}.json
+ *   ../data/static/index.json.gz
+ *   ../data/static/{book-slug}/{chapter}.json.gz
+ *   ../data/static/works/{id}.json.gz
  *
  * To serve locally:
  *   python -m http.server 8000 --directory .   (from project root)
@@ -13,19 +14,32 @@
 const DATA_ROOT = "../data/static";
 
 // ── State ─────────────────────────────────────────────────────────────────────
-let index = null;         // loaded from index.json
+let index = null;         // loaded from index.json.gz
 let activeBook = null;    // slug
 let activeChapter = null; // number
+let activeMode = "scripture";  // "scripture" | "works"
+let activeWorkId = null;       // numeric manuscript id
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
-const bookListEl    = document.getElementById("book-list");
-const searchEl      = document.getElementById("search");
-const welcomeEl     = document.getElementById("welcome");
-const statsEl       = document.getElementById("stats");
-const chapterViewEl = document.getElementById("chapter-view");
-const chapterTitle  = document.getElementById("chapter-title");
-const refsListEl    = document.getElementById("refs-list");
-const authorFilter  = document.getElementById("author-filter");
+const bookListEl       = document.getElementById("book-list");
+const searchEl         = document.getElementById("search");
+const welcomeEl        = document.getElementById("welcome");
+const statsEl          = document.getElementById("stats");
+const chapterViewEl    = document.getElementById("chapter-view");
+const chapterTitle     = document.getElementById("chapter-title");
+const refsListEl       = document.getElementById("refs-list");
+const authorFilter     = document.getElementById("author-filter");
+// Works mode DOM refs
+const scripturePanelEl = document.getElementById("scripture-panel");
+const worksPanelEl     = document.getElementById("works-panel");
+const worksListEl      = document.getElementById("works-list");
+const worksSearchEl    = document.getElementById("works-search");
+const workViewEl       = document.getElementById("work-view");
+const workTitleEl      = document.getElementById("work-title");
+const workMetaEl       = document.getElementById("work-meta");
+const workRefsListEl   = document.getElementById("work-refs-list");
+const bookFilterEl     = document.getElementById("book-filter");
+const modeTabEls       = document.querySelectorAll(".mode-tab");
 
 // ── Fetch helpers ─────────────────────────────────────────────────────────────
 async function fetchJSON(url) {
@@ -50,6 +64,38 @@ function heatLevel(count, max) {
   if (ratio < 0.70) return 3;
   return 4;
 }
+
+// ── Mode switching ────────────────────────────────────────────────────────────
+function setMode(mode) {
+  activeMode = mode;
+  for (const tab of modeTabEls)
+    tab.classList.toggle("active", tab.dataset.mode === mode);
+
+  const isScripture = mode === "scripture";
+  scripturePanelEl.hidden = !isScripture;
+  worksPanelEl.hidden = isScripture;
+
+  if (isScripture) {
+    workViewEl.hidden = true;
+    if (activeChapter !== null) {
+      welcomeEl.hidden = true;
+      chapterViewEl.hidden = false;
+    } else {
+      showWelcome();
+    }
+  } else {
+    chapterViewEl.hidden = true;
+    if (activeWorkId !== null) {
+      welcomeEl.hidden = true;
+      workViewEl.hidden = false;
+    } else {
+      showWelcome();
+    }
+  }
+}
+
+for (const tab of modeTabEls)
+  tab.addEventListener("click", () => setMode(tab.dataset.mode));
 
 // ── Sidebar rendering ─────────────────────────────────────────────────────────
 function renderSidebar(filter = "") {
@@ -114,6 +160,7 @@ function toggleBook(slug) {
 function showWelcome() {
   welcomeEl.hidden = false;
   chapterViewEl.hidden = true;
+  workViewEl.hidden = true;
   if (!index) return;
   const totalBooks = index.books.length;
   const totalRefs  = index.books.reduce((s, b) => s + b.chapters.reduce((s2, c) => s2 + c.count, 0), 0);
@@ -130,6 +177,7 @@ async function loadChapter(bookSlug, chapter) {
 
   welcomeEl.hidden = true;
   chapterViewEl.hidden = false;
+  workViewEl.hidden = true;
   refsListEl.innerHTML = `<p class="loading">Loading…</p>`;
 
   const bookInfo = index.books.find(b => b.slug === bookSlug);
@@ -204,6 +252,114 @@ function applyAuthorFilter() {
 
 authorFilter.addEventListener("change", applyAuthorFilter);
 
+// ── Works sidebar ─────────────────────────────────────────────────────────────
+function renderWorksList(filter = "") {
+  const term = filter.toLowerCase();
+  worksListEl.innerHTML = "";
+
+  for (const work of index.works) {
+    if (term && !`${work.author} ${work.title}`.toLowerCase().includes(term)) continue;
+
+    const btn = document.createElement("button");
+    btn.className = "work-btn" + (work.id === activeWorkId ? " active" : "");
+
+    const yearStr = work.year ? ` (${work.year})` : "";
+    const badge = work.ref_count != null
+      ? `<span class="work-ref-badge">${work.ref_count.toLocaleString()}</span>`
+      : "";
+
+    btn.innerHTML = `
+      <span class="work-btn-text">
+        <span class="work-author">${esc(work.author)}</span>
+        <span class="work-title-sm"> — ${esc(work.title)}${esc(yearStr)}</span>
+      </span>
+      ${badge}
+    `;
+    btn.addEventListener("click", () => loadWork(work.id));
+    worksListEl.appendChild(btn);
+  }
+}
+
+worksSearchEl.addEventListener("input", () => renderWorksList(worksSearchEl.value));
+
+// ── Work loading ──────────────────────────────────────────────────────────────
+async function loadWork(workId) {
+  activeWorkId = workId;
+  renderWorksList(worksSearchEl.value);
+
+  welcomeEl.hidden = true;
+  chapterViewEl.hidden = true;
+  workViewEl.hidden = false;
+  workRefsListEl.innerHTML = `<p class="loading">Loading…</p>`;
+
+  let data;
+  try {
+    data = await fetchJSON(`${DATA_ROOT}/works/${workId}.json.gz`);
+  } catch (err) {
+    workRefsListEl.innerHTML = `<p class="no-refs">Could not load work data. Have you run builder.py?</p>`;
+    return;
+  }
+
+  renderWork(data);
+}
+
+function renderWork(data) {
+  workTitleEl.textContent = data.title;
+  workMetaEl.textContent = `${data.author}${data.year ? ` (${data.year})` : ""}`;
+
+  // Book filter dropdown (books in the order they appear in refs)
+  const seenBooks = [];
+  for (const ref of data.refs)
+    if (!seenBooks.includes(ref.book)) seenBooks.push(ref.book);
+
+  bookFilterEl.innerHTML = `<option value="">All books</option>`;
+  for (const book of seenBooks) {
+    const opt = document.createElement("option");
+    opt.value = book;
+    opt.textContent = book;
+    bookFilterEl.appendChild(opt);
+  }
+
+  workRefsListEl.innerHTML = "";
+
+  if (!data.refs.length) {
+    workRefsListEl.innerHTML = `<p class="no-refs">No references found for this work.</p>`;
+    return;
+  }
+
+  for (const ref of data.refs) {
+    const card = document.createElement("article");
+    card.className = "ref-card";
+    card.dataset.book = ref.book;
+
+    const locTag = ref.v
+      ? `<span class="ref-verse-tag">${esc(ref.book)} ${ref.chapter}:${esc(ref.v)}</span>`
+      : `<span class="ref-verse-tag">${esc(ref.book)} ${ref.chapter}</span>`;
+
+    card.innerHTML = `
+      <div class="ref-meta">
+        <div>
+          <span class="ref-author">${esc(data.author)}</span>
+          <span class="ref-work"> — ${esc(data.title)}</span>
+        </div>
+        ${locTag}
+      </div>
+      <div class="ref-text">${esc(ref.text)}</div>
+    `;
+    workRefsListEl.appendChild(card);
+  }
+
+  applyBookFilter();
+}
+
+function applyBookFilter() {
+  const val = bookFilterEl.value;
+  for (const card of workRefsListEl.querySelectorAll(".ref-card"))
+    card.hidden = val && card.dataset.book !== val;
+}
+
+bookFilterEl.addEventListener("change", applyBookFilter);
+
 // ── Utility ───────────────────────────────────────────────────────────────────
 function esc(str) {
   if (!str) return "";
@@ -227,6 +383,7 @@ async function init() {
   }
 
   renderSidebar();
+  renderWorksList();
   showWelcome();
 }
 
