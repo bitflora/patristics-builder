@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Patristics — Bible Reference Viewer</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Patristics</h1>
+    <p class="subtitle">Bible verses through the eyes of the great thinkers</p>
+  </header>
+
+  <div id="app">
+    <!-- Left sidebar: book/chapter navigation -->
+    <nav id="sidebar">
+      <div id="search-wrap">
+        <input id="search" type="search" placeholder="Filter books…" aria-label="Filter books">
+      </div>
+      <div id="book-list" role="list"></div>
+    </nav>
+
+    <!-- Main content area -->
+    <main id="content">
+      <div id="welcome">
+        <h2>Select a book and chapter</h2>
+        <p>Choose a book from the left panel to see which chapters have references,
+           then click a chapter to read the passages.</p>
+        <div id="stats"></div>
+      </div>
+      <div id="chapter-view" hidden>
+        <div id="chapter-header">
+          <h2 id="chapter-title"></h2>
+          <div id="filter-bar">
+            <label for="author-filter">Filter by author:</label>
+            <select id="author-filter"><option value="">All authors</option></select>
+          </div>
+        </div>
+        <div id="refs-list"></div>
+      </div>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
