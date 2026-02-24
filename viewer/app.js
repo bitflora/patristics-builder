@@ -31,6 +31,13 @@ const authorFilter  = document.getElementById("author-filter");
 async function fetchJSON(url) {
   const resp = await fetch(url);
   if (!resp.ok) throw new Error(`Failed to fetch ${url}: ${resp.status}`);
+  // If the server set Content-Encoding: gzip the browser already decompressed;
+  // otherwise (e.g. simple static servers) decompress the raw gzip stream manually.
+  if (url.endsWith('.gz') && !resp.headers.get('Content-Encoding')) {
+    const ds = new DecompressionStream('gzip');
+    const text = await new Response(resp.body.pipeThrough(ds)).text();
+    return JSON.parse(text);
+  }
   return resp.json();
 }
 
@@ -132,7 +139,7 @@ async function loadChapter(bookSlug, chapter) {
 
   let data;
   try {
-    data = await fetchJSON(`${DATA_ROOT}/${bookSlug}/${chapter}.json`);
+    data = await fetchJSON(`${DATA_ROOT}/${bookSlug}/${chapter}.json.gz`);
   } catch (err) {
     refsListEl.innerHTML = `<p class="no-refs">Could not load chapter data. Have you run builder.py?</p>`;
     return;
@@ -210,7 +217,7 @@ function esc(str) {
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
   try {
-    index = await fetchJSON(`${DATA_ROOT}/index.json`);
+    index = await fetchJSON(`${DATA_ROOT}/index.json.gz`);
   } catch (err) {
     bookListEl.innerHTML = `<p style="padding:.75rem;color:var(--muted);font-size:.85rem">
       Could not load index.json.<br>Run <code>python src/parser.py</code> then

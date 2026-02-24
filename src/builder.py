@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import shutil
 import sys
@@ -120,8 +121,9 @@ def build_chapter(
     }
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_file = out_dir / f"{chapter}.json"
-    out_file.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+    out_file = out_dir / f"{chapter}.json.gz"
+    with gzip.open(out_file, "wt", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
     return len(refs)
 
 
@@ -176,8 +178,9 @@ def build_index(conn, only_book: str | None = None) -> None:
 
     payload = {"books": books_out, "works": global_works}
     STATIC_DIR.mkdir(parents=True, exist_ok=True)
-    index_path = STATIC_DIR / "index.json"
-    index_path.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+    index_path = STATIC_DIR / "index.json.gz"
+    with gzip.open(index_path, "wt", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
     print(f"Wrote {index_path}  ({len(books_out)} books with references)")
 
 

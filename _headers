@@ -1,0 +1,7 @@
+/data/static/*.json.gz
+  Content-Type: application/json
+  Content-Encoding: gzip
+
+/data/static/*/*.json.gz
+  Content-Type: application/json
+  Content-Encoding: gzip

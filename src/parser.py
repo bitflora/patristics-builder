@@ -27,13 +27,101 @@ MANUSCRIPTS_DIR = Path(__file__).parent.parent / "manuscripts"
 
 # ── Manuscript metadata ───────────────────────────────────────────────────────
 # Maps filename → (author, title, year, ccel_url)
-# Add entries here as you download more manuscripts.
+# Entries here override any metadata extracted from the file header.
+# Add entries for files whose header metadata is absent or inaccurate.
 METADATA: dict[str, tuple] = {
     "mort.txt":        ("John Owen",        "Of the Mortification of Sin in Believers", 1656, None),
     "government.txt":  ("Richard Allestree","The Government of the Tongue",             1674, None),
     "sermons.txt":     ("Meister Eckhart",  "Sermons",                                  1300, None),
     "warrant3.txt":    ("Alvin Plantinga",  "Warranted Christian Belief",               2000, None),
 }
+
+# Role/title words that appear after "Lastname," but are NOT a first name.
+# When these follow the comma we fall back to lastname-only.
+_ROLE_TITLE_RE = re.compile(
+    r'^(?:Archbishop|Bishop|Cardinal|Pope|Abbot|Patriarch|Monk|Presbyter)\s+of\b',
+    re.IGNORECASE,
+)
+_HONORIFIC_PREFIX_RE = re.compile(
+    r'^(?:St\.|Saint|Rev\.?|Dr\.?|Sir)[,\s]+',
+    re.IGNORECASE,
+)
+
+
+def _normalize_creator(raw: str) -> str:
+    """
+    Normalise a CCEL Creator(s) field to a plain author name.
+
+    Handles patterns like:
+      "Berkhof, Louis (1873-1957)"          → "Louis Berkhof"
+      "Augustine, Saint, Bishop of Hippo (345-430)" → "Augustine"
+      "Liguori, St. Alphonsus de (1696-1787)"        → "St. Alphonsus de Liguori"
+      "Matelda of Magdeburg"                 → "Matelda of Magdeburg"
+      "Anonymous"                            → "Anonymous"
+    """
+    # Remove date parentheticals: (1864-1912), (c.296-c.373), (d. 1631), (14th. c. English)
+    s = re.sub(r'\s*\([^)]*\)\s*', ' ', raw).strip()
+
+    if s.lower().startswith('anon'):
+        return 'Anonymous'
+
+    parts = s.split(',', 1)
+    if len(parts) == 1:
+        return parts[0].strip()
+
+    lastname = parts[0].strip()
+    rest = parts[1].strip()
+
+    # Strip leading honorifics from the "rest" part
+    rest = _HONORIFIC_PREFIX_RE.sub('', rest).strip()
+    # Strip any stray leading comma left after honorific removal
+    rest = rest.lstrip(',').strip()
+
+    # If rest is empty or is purely a role title ("Archbishop of Alexandria"), use lastname only
+    if not rest or _ROLE_TITLE_RE.match(rest):
+        return lastname
+
+    return f"{rest} {lastname}"
+
+
+def _parse_ccel_header(text: str) -> tuple[str | None, str | None, int | None]:
+    """
+    Extract (author, title, year) from a CCEL-format file header.
+
+    The header sits between the first two _______ separator lines near the
+    top of the file and contains fields like:
+        Title:      ...
+        Creator(s): ...
+        Print Basis: ...
+
+    Returns (None, None, None) if the header is not present.
+    """
+    sep_re = re.compile(r'_{10,}')
+    matches = list(sep_re.finditer(text, 0, 4000))
+    if len(matches) < 2:
+        return None, None, None
+
+    header = text[matches[0].end():matches[1].start()]
+
+    # Title
+    title_m = re.search(r'^\s*Title:\s*(.+)', header, re.MULTILINE)
+    title = title_m.group(1).strip() if title_m else None
+
+    # Creator(s) — may span continuation lines; grab first line only
+    creator_m = re.search(r'^\s*Creator\(s\):\s*(.+)', header, re.MULTILINE)
+    author = None
+    if creator_m:
+        author = _normalize_creator(creator_m.group(1).strip())
+
+    # Year — take last 4-digit year-like number from Print Basis line
+    year = None
+    basis_m = re.search(r'^\s*Print Basis:\s*(.+)', header, re.MULTILINE)
+    if basis_m:
+        year_m = re.search(r'\b(1\d{3}|2[01]\d{2})\b', basis_m.group(1))
+        if year_m:
+            year = int(year_m.group(1))
+
+    return author, title, year
 
 # ── Sentence splitting ────────────────────────────────────────────────────────
 
@@ -264,6 +352,56 @@ def extract_passage_offsets(text: str, citation_offset: int) -> tuple[int, int]:
     return para_start + win_start_rel, para_start + win_end_rel
 
 
+# ── Footnote detection ────────────────────────────────────────────────────────
+
+def _footnote_line_number(text: str, offset: int) -> int | None:
+    """
+    If *offset* falls within a footnote-definition line of the form
+    "   [3] Some citation text", return the footnote number (3).
+    Otherwise return None.
+
+    A footnote definition line is identified by having the pattern
+    \\[N\\] as the first non-whitespace content on the line.
+    """
+    line_start = text.rfind('\n', 0, offset)
+    line_start = line_start + 1 if line_start != -1 else 0
+    line_before = text[line_start:offset]
+    m = re.match(r'^\s*\[(\d+)\]\s*$', line_before)
+    if m:
+        return int(m.group(1))
+    # Also check when the citation immediately follows [n] on the same line
+    # by looking at the full line from its start to the next newline
+    line_end = text.find('\n', offset)
+    if line_end == -1:
+        line_end = len(text)
+    full_line = text[line_start:line_end]
+    m2 = re.match(r'^\s*\[(\d+)\]', full_line)
+    if m2:
+        return int(m2.group(1))
+    return None
+
+
+def _find_inline_ref_offset(text: str, footnote_num: int, before_offset: int) -> int | None:
+    """
+    Find the body-text inline footnote marker [N] that is NOT itself a
+    footnote-definition line.  Searches from the start of *text* up to
+    *before_offset* and returns the offset of the LAST such match, which
+    is the one closest to (and therefore belonging to) the footnote block.
+    Returns None if no inline marker is found.
+    """
+    pattern = re.compile(r'\[' + re.escape(str(footnote_num)) + r'\]')
+    best: int | None = None
+    for m in pattern.finditer(text, 0, before_offset):
+        pos = m.start()
+        line_start = text.rfind('\n', 0, pos)
+        line_start = line_start + 1 if line_start != -1 else 0
+        # Inline if there is non-whitespace text before [n] on the same line
+        content_before = text[line_start:pos]
+        if content_before.strip():
+            best = pos
+    return best
+
+
 # ── Main parsing logic ────────────────────────────────────────────────────────
 
 def parse_file(
@@ -277,14 +415,18 @@ def parse_file(
     Returns the number of citations found.
     """
     filename = path.name
-    meta = METADATA.get(filename, (None, None, None, None))
-    author, title, year, ccel_url = meta
+    text = path.read_text(encoding="utf-8", errors="replace")
+
+    # Metadata: explicit overrides take priority, then fall back to header
+    if filename in METADATA:
+        author, title, year, ccel_url = METADATA[filename]
+    else:
+        author, title, year = _parse_ccel_header(text)
+        ccel_url = None
 
     print(f"\nParsing: {filename}")
     if author:
         print(f"  Author: {author}  |  Title: {title}")
-
-    text = path.read_text(encoding="utf-8", errors="replace")
 
     if not dry_run:
         manuscript_id = upsert_manuscript(conn, filename, author, title, year, ccel_url)
@@ -322,7 +464,16 @@ def parse_file(
         verse_start, verse_end = _parse_verse_field(raw_verse)
 
         citation_offset = m.start()
-        passage_start, passage_end = extract_passage_offsets(text, citation_offset)
+
+        # If the citation is inside a footnote definition line like "   [3] Gen. i. 1",
+        # map the passage back to the body-text paragraph that carries marker [3].
+        fn_num = _footnote_line_number(text, citation_offset)
+        if fn_num is not None:
+            inline_offset = _find_inline_ref_offset(text, fn_num, citation_offset)
+            anchor = inline_offset if inline_offset is not None else citation_offset
+        else:
+            anchor = citation_offset
+        passage_start, passage_end = extract_passage_offsets(text, anchor)
 
         if verbose or dry_run:
             ref_str = f"{book['name']} {chapter}"
