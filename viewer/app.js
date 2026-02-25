@@ -481,6 +481,7 @@ function renderVizTab() {
   renderBibleHeatmap(cats);
   renderTopBooksChart(cats);
   renderWorksTimeline(cats);
+  renderBibleRefsByDate(cats); // async, fills in after data loads
   renderCategoryDonut(cats);
 }
 
@@ -701,7 +702,191 @@ function renderWorksTimeline(cats) {
   }
 }
 
-// ── 4. Category Donut ─────────────────────────────────────────────────────────
+// ── 4. Bible References by Date ───────────────────────────────────────────────
+
+// Cache: workId → refs array (passages discarded to save memory)
+const workRefsCache = new Map();
+
+async function fetchWorkRefs(workId) {
+  if (workRefsCache.has(workId)) return workRefsCache.get(workId);
+  try {
+    const data = await fetchJSON(`${DATA_ROOT}/manuscripts/${workId}.json.zst`);
+    workRefsCache.set(workId, data.refs);
+    return data.refs;
+  } catch {
+    workRefsCache.set(workId, []);
+    return [];
+  }
+}
+
+// Maps every slug in the Protestant canon to a display group.
+// Anything unrecognised (deuterocanonical books, etc.) falls back to 'Deuterocanon'.
+const BOOK_GROUP_MAP = new Map([
+  ...['genesis','exodus','leviticus','numbers','deuteronomy']
+      .map(s => [s, 'Pentateuch']),
+  ...['joshua','judges','ruth','1-samuel','2-samuel','1-kings','2-kings',
+      '1-chronicles','2-chronicles','ezra','nehemiah','esther']
+      .map(s => [s, 'Historical']),
+  ...['job','psalms','proverbs','ecclesiastes','song-of-solomon']
+      .map(s => [s, 'Poetic']),
+  ...['isaiah','jeremiah','lamentations','ezekiel','daniel']
+      .map(s => [s, 'Maj. Prophets']),
+  ...['hosea','joel','amos','obadiah','jonah','micah','nahum',
+      'habakkuk','zephaniah','haggai','zechariah','malachi']
+      .map(s => [s, 'Min. Prophets']),
+  ...['matthew','mark','luke','john'].map(s => [s, 'Gospels']),
+  ...['acts','romans','1-corinthians','2-corinthians','galatians','ephesians',
+      'philippians','colossians','1-thessalonians','2-thessalonians',
+      '1-timothy','2-timothy','titus','philemon','hebrews',
+      'james','1-peter','2-peter','1-john','2-john','3-john','jude']
+      .map(s => [s, 'Acts & Epistles']),
+  ...['revelation'].map(s => [s, 'Revelation']),
+]);
+
+// Canonical display order (Deuterocanon inserted between Testaments)
+const BOOK_GROUP_ORDER = [
+  'Pentateuch','Historical','Poetic','Maj. Prophets','Min. Prophets',
+  'Deuterocanon',
+  'Gospels','Acts & Epistles','Revelation',
+];
+
+const BOOK_GROUP_COLORS = new Map([
+  ['Pentateuch',     '#8a6a3a'],
+  ['Historical',     '#5a8a5a'],
+  ['Poetic',         '#7a6a8a'],
+  ['Maj. Prophets',  '#9a5a3a'],
+  ['Min. Prophets',  '#6a7a4a'],
+  ['Deuterocanon',   '#888888'],
+  ['Gospels',        '#3a7a8a'],
+  ['Acts & Epistles','#4a5a8a'],
+  ['Revelation',     '#8a3a3a'],
+]);
+
+async function renderBibleRefsByDate(cats) {
+  const sec = makeVizSection('Bible References by Date');
+  const desc = document.createElement('p');
+  desc.className = 'viz-desc';
+  desc.textContent = 'Which parts of the Bible were cited at each period. Each dot is one work; vertical position shows the Bible section it referenced most. Dot size reflects citation count. Click to open.';
+  sec.appendChild(desc);
+
+  const worksWithYear = index.works
+    .filter(w => w.year != null && cats.has(w.category || 'Other'));
+
+  if (!worksWithYear.length) {
+    const p = document.createElement('p');
+    p.className = 'no-refs';
+    p.textContent = 'No dated works in the selected categories.';
+    sec.appendChild(p);
+    return;
+  }
+
+  const loadingEl = document.createElement('p');
+  loadingEl.className = 'loading';
+  loadingEl.textContent = `Loading citation data for ${worksWithYear.length} works…`;
+  sec.appendChild(loadingEl);
+
+  // Fetch all work ref lists in parallel (cached after first load)
+  const workRefsData = await Promise.all(
+    worksWithYear.map(async w => {
+      const refs = await fetchWorkRefs(w.id);
+      const groupCounts = new Map();
+      for (const ref of refs) {
+        const group = BOOK_GROUP_MAP.get(ref.book_slug) ?? 'Deuterocanon';
+        groupCounts.set(group, (groupCounts.get(group) || 0) + 1);
+      }
+      return { work: w, groupCounts };
+    })
+  );
+
+  // Abort if the section was removed from the DOM while we were loading
+  // (happens when the user changes a category filter mid-load)
+  if (!sec.isConnected) return;
+  loadingEl.remove();
+
+  // Only show groups that actually appear in the data
+  const activeGroups = BOOK_GROUP_ORDER.filter(g =>
+    workRefsData.some(d => d.groupCounts.has(g))
+  );
+
+  if (!activeGroups.length) {
+    sec.appendChild(Object.assign(document.createElement('p'),
+      { className: 'no-refs', textContent: 'No data.' }));
+    return;
+  }
+
+  const minYear  = Math.min(...worksWithYear.map(w => w.year));
+  const maxYear  = Math.max(...worksWithYear.map(w => w.year));
+  const yearSpan = Math.max(maxYear - minYear, 1);
+  const maxCount = Math.max(...workRefsData.flatMap(d => [...d.groupCounts.values()]), 1);
+
+  const SVG_W = 680, PAD_L = 112, PAD_R = 10, PAD_T = 12, PAD_B = 32;
+  const PLOT_W = SVG_W - PAD_L - PAD_R;
+  const PLOT_H = Math.max(80, activeGroups.length * 42);
+  const SVG_H  = PLOT_H + PAD_T + PAD_B;
+  const bandH  = PLOT_H / activeGroups.length;
+
+  const xOf = yr => PAD_L + ((yr - minYear) / yearSpan) * PLOT_W;
+  const rOf = n  => Math.max(3, Math.min(12, 3 + (n / maxCount) * 9));
+
+  const rawStep = yearSpan / 5;
+  const mag = Math.pow(10, Math.floor(Math.log10(rawStep)));
+  const tickStep = [1, 2, 5, 10].map(n => n * mag)
+    .find(s => yearSpan / s <= 8 && yearSpan / s >= 2) || mag * 10;
+
+  let s = [`<svg class="viz-svg" viewBox="0 0 ${SVG_W} ${SVG_H}">`];
+
+  // Alternating band backgrounds
+  for (let i = 0; i < activeGroups.length; i++) {
+    if (i % 2 === 0) continue;
+    const by = PAD_T + i * bandH;
+    s.push(`<rect x="0" y="${f(by)}" width="${SVG_W}" height="${f(bandH)}" fill="rgba(0,0,0,0.025)"/>`);
+  }
+
+  // Group labels on left y-axis
+  for (let i = 0; i < activeGroups.length; i++) {
+    const gy = f(PAD_T + (i + 0.5) * bandH + 4);
+    const col = BOOK_GROUP_COLORS.get(activeGroups[i]) || '#7a5c38';
+    s.push(`<text x="${PAD_L - 6}" y="${gy}" text-anchor="end" font-size="10" font-family="Georgia,serif" fill="${col}">${esc(activeGroups[i])}</text>`);
+  }
+
+  // x-axis line
+  s.push(`<line x1="${PAD_L}" y1="${SVG_H - PAD_B}" x2="${SVG_W - PAD_R}" y2="${SVG_H - PAD_B}" stroke="var(--border)" stroke-width="1"/>`);
+
+  // Year ticks
+  const firstTick = Math.ceil(minYear / tickStep) * tickStep;
+  for (let yr = firstTick; yr <= maxYear; yr += tickStep) {
+    const tx = xOf(yr);
+    s.push(`<line x1="${f(tx)}" y1="${SVG_H - PAD_B}" x2="${f(tx)}" y2="${SVG_H - PAD_B + 4}" stroke="var(--muted)" stroke-width="1"/>`);
+    s.push(`<text x="${f(tx)}" y="${SVG_H - PAD_B + 14}" class="viz-axis-label" text-anchor="middle">${yr}</text>`);
+  }
+
+  // One dot per (work × group) pair
+  for (const { work, groupCounts } of workRefsData) {
+    const x = xOf(work.year);
+    for (const [group, count] of groupCounts) {
+      const gi = activeGroups.indexOf(group);
+      if (gi === -1) continue;
+      const y   = PAD_T + (gi + 0.5) * bandH;
+      const r   = rOf(count);
+      const col = BOOK_GROUP_COLORS.get(group) || '#7a5c38';
+      const tip = `${work.author} — ${work.title} (${work.year})\n${group}: ${count} refs`;
+      s.push(`<circle cx="${f(x)}" cy="${f(y)}" r="${r}" fill="${col}" opacity="0.70" stroke="rgba(255,255,255,0.4)" stroke-width="0.5" data-work-id="${work.id}" style="cursor:pointer"><title>${esc(tip)}</title></circle>`);
+    }
+  }
+
+  s.push('</svg>');
+
+  const wrap = document.createElement('div');
+  wrap.className = 'viz-chart-wrap';
+  wrap.innerHTML = s.join('');
+  wrap.querySelector('svg').addEventListener('click', e => {
+    const dot = e.target.closest('circle[data-work-id]');
+    if (dot) navigateToWork(parseInt(dot.getAttribute('data-work-id'), 10));
+  });
+  sec.appendChild(wrap);
+}
+
+// ── 5. Category Donut ─────────────────────────────────────────────────────────
 function renderCategoryDonut(cats) {
   const sec = makeVizSection('Corpus by Category');
   const colors = getCatColors();
