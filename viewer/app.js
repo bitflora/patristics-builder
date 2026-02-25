@@ -2,9 +2,9 @@
  * Patristics Viewer — static SPA
  *
  * Expects data files at:
- *   ../data/static/index.json.gz
- *   ../data/static/bible/{book-slug}/{chapter}.json.gz
- *   ../data/static/manuscripts/{id}.json.gz
+ *   ../data/static/index.json.zst
+ *   ../data/static/bible/{book-slug}/{chapter}.json.zst
+ *   ../data/static/manuscripts/{id}.json.zst
  *
  * To serve locally:
  *   python -m http.server 8000 --directory .   (from project root)
@@ -14,7 +14,7 @@
 const DATA_ROOT = "../data/static";
 
 // ── State ─────────────────────────────────────────────────────────────────────
-let index = null;         // loaded from index.json.gz
+let index = null;         // loaded from index.json.zst
 let activeBook = null;    // slug
 let activeChapter = null; // number
 let activeMode = "scripture";  // "scripture" | "works"
@@ -46,12 +46,12 @@ const modeTabEls       = document.querySelectorAll(".mode-tab");
 async function fetchJSON(url) {
   const resp = await fetch(url);
   if (!resp.ok) throw new Error(`Failed to fetch ${url}: ${resp.status}`);
-  // If the server set Content-Encoding: gzip the browser already decompressed;
-  // otherwise (e.g. simple static servers) decompress the raw gzip stream manually.
-  if (url.endsWith('.gz') && !resp.headers.get('Content-Encoding')) {
-    const ds = new DecompressionStream('gzip');
-    const text = await new Response(resp.body.pipeThrough(ds)).text();
-    return JSON.parse(text);
+  // If the server set Content-Encoding: zstd the browser already decompressed;
+  // otherwise (e.g. simple static servers) decompress the raw zstd stream manually.
+  if (url.endsWith('.zst') && !resp.headers.get('Content-Encoding')) {
+    const buf = await resp.arrayBuffer();
+    const decompressed = fzstd.decompress(new Uint8Array(buf));
+    return JSON.parse(new TextDecoder().decode(decompressed));
   }
   return resp.json();
 }
@@ -190,6 +190,9 @@ function showWelcome() {
 
 // ── Chapter loading ───────────────────────────────────────────────────────────
 async function loadChapter(bookSlug, chapter) {
+  activeMode = "scripture";
+  for (const tab of modeTabEls) tab.classList.toggle("active", tab.dataset.mode === "scripture");
+
   activeBook = bookSlug;
   activeChapter = chapter;
   renderSidebar(searchEl.value);
@@ -206,7 +209,7 @@ async function loadChapter(bookSlug, chapter) {
 
   let data;
   try {
-    data = await fetchJSON(`${DATA_ROOT}/bible/${bookSlug}/${chapter}.json.gz`);
+    data = await fetchJSON(`${DATA_ROOT}/bible/${bookSlug}/${chapter}.json.zst`);
   } catch (err) {
     refsListEl.innerHTML = `<p class="no-refs">Could not load chapter data. Have you run builder.py?</p>`;
     return;
@@ -344,6 +347,9 @@ worksSearchEl.addEventListener("input", () => renderWorksList(worksSearchEl.valu
 
 // ── Work loading ──────────────────────────────────────────────────────────────
 async function loadWork(workId) {
+  activeMode = "works";
+  for (const tab of modeTabEls) tab.classList.toggle("active", tab.dataset.mode === "works");
+
   activeWorkId = workId;
   renderWorksList(worksSearchEl.value);
 
@@ -354,7 +360,7 @@ async function loadWork(workId) {
 
   let data;
   try {
-    data = await fetchJSON(`${DATA_ROOT}/manuscripts/${workId}.json.gz`);
+    data = await fetchJSON(`${DATA_ROOT}/manuscripts/${workId}.json.zst`);
   } catch (err) {
     workRefsListEl.innerHTML = `<p class="no-refs">Could not load work data. Have you run builder.py?</p>`;
     return;
@@ -433,7 +439,7 @@ function esc(str) {
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
   try {
-    index = await fetchJSON(`${DATA_ROOT}/index.json.gz`);
+    index = await fetchJSON(`${DATA_ROOT}/index.json.zst`);
   } catch (err) {
     bookListEl.innerHTML = `<p style="padding:.75rem;color:var(--muted);font-size:.85rem">
       Could not load index.json.<br>Run <code>python src/parser.py</code> then

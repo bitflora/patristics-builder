@@ -18,11 +18,6 @@
   <div id="app">
     <!-- Left sidebar: navigation -->
     <nav id="sidebar">
-      <div id="mode-tabs">
-        <button class="mode-tab active" data-mode="scripture">Scripture</button>
-        <button class="mode-tab" data-mode="works">Works</button>
-      </div>
-
       <!-- Scripture mode: book/chapter navigation -->
       <div id="scripture-panel">
         <div id="search-wrap">
@@ -42,6 +37,11 @@
 
     <!-- Main content area -->
     <main id="content">
+      <div id="mode-tabs">
+        <button class="mode-tab active" data-mode="scripture">Scripture</button>
+        <button class="mode-tab" data-mode="works">Works</button>
+      </div>
+      <div id="content-body">
       <div id="welcome">
         <h2>Select a book and chapter</h2>
         <p>Choose a book from the left panel to see which chapters have references,
@@ -71,9 +71,11 @@
         </div>
         <div id="work-refs-list"></div>
       </div>
+      </div><!-- #content-body -->
     </main>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/fzstd@0.1.1/umd/index.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

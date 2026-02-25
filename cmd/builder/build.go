@@ -34,7 +34,7 @@ type chapterRef struct {
 	Text string  `json:"text"` // extracted passage text
 }
 
-// chapterPayload is the top-level structure for data/static/bible/{slug}/{ch}.json.gz.
+// chapterPayload is the top-level structure for data/static/bible/{slug}/{ch}.json.zst.
 type chapterPayload struct {
 	Book    string       `json:"book"`
 	Chapter int          `json:"chapter"`
@@ -195,8 +195,8 @@ func buildChapter(db *sql.DB, cache map[string][]rune, bookSlug string, chapter 
 		Refs:    refs,
 	}
 
-	outPath := filepath.Join(staticDir, "bible", bookSlug, fmt.Sprintf("%d.json.gz", chapter))
-	if err := writeGzJSON(outPath, payload); err != nil {
+	outPath := filepath.Join(staticDir, "bible", bookSlug, fmt.Sprintf("%d.json.zst", chapter))
+	if err := writeZstJSON(outPath, payload); err != nil {
 		log.Printf("writing %s: %v", outPath, err)
 		return 0
 	}
@@ -226,7 +226,7 @@ func buildAll(db *sql.DB, cache map[string][]rune, onlyBook string) {
 			if n > 0 {
 				totalRefs += n
 				totalFiles++
-				fmt.Printf("  bible/%s/%d.json.gz  (%d refs)\n", slug, ch, n)
+				fmt.Printf("  bible/%s/%d.json.zst  (%d refs)\n", slug, ch, n)
 			}
 			mu.Unlock()
 		}(ck.slug, ck.chapter)
@@ -336,20 +336,20 @@ func buildWorks(db *sql.DB, cache map[string][]rune) {
 			Refs:     refs,
 		}
 
-		outPath := filepath.Join(worksDir, fmt.Sprintf("%d.json.gz", m.id))
-		if err := writeGzJSON(outPath, payload); err != nil {
+		outPath := filepath.Join(worksDir, fmt.Sprintf("%d.json.zst", m.id))
+		if err := writeZstJSON(outPath, payload); err != nil {
 			log.Printf("writing %s: %v", outPath, err)
 			continue
 		}
 		totalFiles++
-		fmt.Printf("  manuscripts/%d.json.gz  (%d refs)\n", m.id, len(refs))
+		fmt.Printf("  manuscripts/%d.json.zst  (%d refs)\n", m.id, len(refs))
 	}
 	fmt.Printf("\nBuilt %d work files.\n", totalFiles)
 }
 
 // ── Index building ────────────────────────────────────────────────────────────
 
-// buildIndex writes data/static/index.json.gz.
+// buildIndex writes data/static/index.json.zst.
 func buildIndex(db *sql.DB, onlyBook string) {
 	// Per-chapter reference counts broken down by category
 	chRows, err := db.Query(`
@@ -471,8 +471,8 @@ func buildIndex(db *sql.DB, onlyBook string) {
 	if err := os.MkdirAll(staticDir, 0755); err != nil {
 		log.Fatalf("creating static dir: %v", err)
 	}
-	outPath := filepath.Join(staticDir, "index.json.gz")
-	if err := writeGzJSON(outPath, payload); err != nil {
+	outPath := filepath.Join(staticDir, "index.json.zst")
+	if err := writeZstJSON(outPath, payload); err != nil {
 		log.Fatalf("writing index: %v", err)
 	}
 	fmt.Printf("Wrote %s  (%d books with references)\n", outPath, len(booksOut))

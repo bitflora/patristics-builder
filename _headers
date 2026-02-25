@@ -1,11 +1,11 @@
-/data/static/*.json.gz
+/data/static/*.json.zst
   Content-Type: application/json
-  Content-Encoding: gzip
+  Content-Encoding: zstd
 
-/data/static/manuscripts/*.json.gz
+/data/static/manuscripts/*.json.zst
   Content-Type: application/json
-  Content-Encoding: gzip
+  Content-Encoding: zstd
 
-/data/static/bible/*/*.json.gz
+/data/static/bible/*/*.json.zst
   Content-Type: application/json
-  Content-Encoding: gzip
+  Content-Encoding: zstd

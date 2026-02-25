@@ -1,7 +1,7 @@
 /*
 Go replacement for src/builder.py.
 
-Reads the SQLite database and generates static gzip-compressed JSON files
+Reads the SQLite database and generates static zstd-compressed JSON files
 for the viewer. Run from the repository root:
 
   go run ./cmd/builder               # build everything
@@ -9,14 +9,13 @@ for the viewer. Run from the repository root:
   go run ./cmd/builder --clean       # delete data/static/ before building
 
 Outputs:
-  data/static/index.json.gz                      — book list with per-chapter ref counts
-  data/static/bible/{book-slug}/{ch}.json.gz     — all references for a chapter
-  data/static/manuscripts/{id}.json.gz           — all references from a single work
+  data/static/index.json.zst                      — book list with per-chapter ref counts
+  data/static/bible/{book-slug}/{ch}.json.zst     — all references for a chapter
+  data/static/manuscripts/{id}.json.zst           — all references from a single work
 */
 package main
 
 import (
-	"compress/gzip"
 	"database/sql"
 	"encoding/json"
 	"flag"
@@ -28,6 +27,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/klauspost/compress/zstd"
 	_ "modernc.org/sqlite"
 )
 
@@ -112,7 +112,7 @@ func openDB(path string) *sql.DB {
 	return db
 }
 
-func writeGzJSON(path string, payload any) error {
+func writeZstJSON(path string, payload any) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
@@ -121,26 +121,33 @@ func writeGzJSON(path string, payload any) error {
 		return err
 	}
 	defer f.Close()
-	gw, _ := gzip.NewWriterLevel(f, gzip.BestSpeed)
-	enc := json.NewEncoder(gw)
+	zw, err := zstd.NewWriter(f, zstd.WithEncoderLevel(zstd.SpeedFastest))
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(zw)
 	enc.SetEscapeHTML(false) // match Python's ensure_ascii=False behaviour for < > &
 	if err := enc.Encode(payload); err != nil {
 		return err
 	}
-	return gw.Close()
+	return zw.Close()
 }
 
 func cleanupUncompressed() {
 	removed := 0
 	filepath.WalkDir(staticDir, func(path string, d fs.DirEntry, _ error) error {
-		if !d.IsDir() && strings.HasSuffix(path, ".json") && !strings.HasSuffix(path, ".json.gz") {
+		if d.IsDir() {
+			return nil
+		}
+		// Remove old gzip files and any bare .json files
+		if strings.HasSuffix(path, ".json.gz") || (strings.HasSuffix(path, ".json") && !strings.HasSuffix(path, ".json.zst")) {
 			os.Remove(path)
 			removed++
 		}
 		return nil
 	})
 	if removed > 0 {
-		fmt.Printf("Cleaned up %d uncompressed .json file(s).\n", removed)
+		fmt.Printf("Cleaned up %d old/uncompressed file(s).\n", removed)
 	}
 }
 
