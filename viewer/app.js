@@ -496,12 +496,31 @@ function makeVizSection(title) {
   return sec;
 }
 
-// Navigate from viz to a book in Scripture mode
+// Navigate from viz to a book — auto-loads the first chapter that has references
 function navigateToBook(slug) {
-  activeBook = slug;
-  activeChapter = null;
-  setMode('scripture');
-  renderSidebar(searchEl.value);
+  const book = index.books.find(b => b.slug === slug);
+  const cats = checkedCategories();
+  const firstCh = book?.chapters.find(ch => filteredCount(ch, cats) > 0);
+  if (firstCh) {
+    // Pre-set state so setMode shows the chapter panel rather than the welcome screen
+    activeBook = slug;
+    activeChapter = firstCh.ch;
+    setMode('scripture');          // Restores sidebar, hides viz panel
+    loadChapter(slug, firstCh.ch); // Fetches and renders the chapter
+  } else {
+    activeBook = slug;
+    activeChapter = null;
+    setMode('scripture');
+    renderSidebar(searchEl.value);
+  }
+}
+
+// Navigate from viz to a specific work in Works mode
+function navigateToWork(workId) {
+  // Pre-set activeWorkId so setMode shows the work panel rather than the welcome screen
+  activeWorkId = workId;
+  setMode('works');   // Restores sidebar, hides viz panel
+  loadWork(workId);   // Fetches and renders the work
 }
 
 // Fixed-point helper for SVG coords
@@ -659,13 +678,17 @@ function renderWorksTimeline(cats) {
       const y = PAD_T + (catIdx + 0.5) * bandH;
       const col = colors.get(work.category || 'Other') || '#7a5c38';
       const tip = `${work.author} — ${work.title} (${work.year}) · ${work.ref_count || 0} refs`;
-      s.push(`<circle cx="${f(x)}" cy="${f(y)}" r="${r}" fill="${col}" opacity="0.75" stroke="rgba(255,255,255,0.5)" stroke-width="0.5"><title>${esc(tip)}</title></circle>`);
+      s.push(`<circle cx="${f(x)}" cy="${f(y)}" r="${r}" fill="${col}" opacity="0.75" stroke="rgba(255,255,255,0.5)" stroke-width="0.5" data-work-id="${work.id}" style="cursor:pointer"><title>${esc(tip)}</title></circle>`);
     }
 
     s.push('</svg>');
     const wrap = document.createElement('div');
     wrap.className = 'viz-chart-wrap';
     wrap.innerHTML = s.join('');
+    wrap.querySelector('svg').addEventListener('click', e => {
+      const dot = e.target.closest('circle[data-work-id]');
+      if (dot) navigateToWork(parseInt(dot.getAttribute('data-work-id'), 10));
+    });
     sec.appendChild(wrap);
     sec.appendChild(buildCatLegend(catList, colors));
   }
