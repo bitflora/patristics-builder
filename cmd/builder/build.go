@@ -24,6 +24,7 @@ type workEntry struct {
 	Title    string `json:"title"`
 	Year     *int   `json:"year"`
 	Filename string `json:"filename"`
+	Category string `json:"category"`
 }
 
 // chapterRef is a single citation record within a chapter file.
@@ -132,7 +133,7 @@ func buildChapter(db *sql.DB, cache map[string][]rune, bookSlug string, chapter 
 			vr.verse_start, vr.verse_end,
 			vr.passage_start_offset, vr.passage_end_offset,
 			m.id AS manuscript_id,
-			m.filename, m.author, m.title, m.year
+			m.filename, m.author, m.title, m.year, m.category
 		FROM verse_refs vr
 		JOIN manuscripts m ON m.id = vr.manuscript_id
 		WHERE vr.book_slug = ? AND vr.chapter = ?
@@ -153,11 +154,11 @@ func buildChapter(db *sql.DB, cache map[string][]rune, bookSlug string, chapter 
 		var passStart, passEnd int64
 		var mID int64
 		var filename string
-		var author, title sql.NullString
+		var author, title, category sql.NullString
 		var year sql.NullInt64
 
 		if err := rows.Scan(&verseStart, &verseEnd, &passStart, &passEnd,
-			&mID, &filename, &author, &title, &year); err != nil {
+			&mID, &filename, &author, &title, &year, &category); err != nil {
 			log.Printf("scanning ref row for %s %d: %v", bookSlug, chapter, err)
 			continue
 		}
@@ -170,6 +171,7 @@ func buildChapter(db *sql.DB, cache map[string][]rune, bookSlug string, chapter 
 				Title:    nullStringOr(title, filename),
 				Year:     nullInt64Ptr(year),
 				Filename: filename,
+				Category: nullStringOr(category, "Other"),
 			})
 		}
 		workIdx := worksSeen[mID]
@@ -349,33 +351,42 @@ func buildWorks(db *sql.DB, cache map[string][]rune) {
 
 // buildIndex writes data/static/index.json.gz.
 func buildIndex(db *sql.DB, onlyBook string) {
-	// Per-chapter reference counts across all books
+	// Per-chapter reference counts broken down by category
 	chRows, err := db.Query(`
-		SELECT book_slug, chapter, COUNT(*) AS n
-		FROM verse_refs
-		GROUP BY book_slug, chapter
-		ORDER BY book_slug, chapter
+		SELECT vr.book_slug, vr.chapter, COALESCE(m.category, 'Other') AS cat, COUNT(*) AS n
+		FROM verse_refs vr
+		JOIN manuscripts m ON m.id = vr.manuscript_id
+		GROUP BY vr.book_slug, vr.chapter, cat
+		ORDER BY vr.book_slug, vr.chapter
 	`)
 	if err != nil {
 		log.Fatalf("querying chapter counts: %v", err)
 	}
-	chapterCounts := make(map[string]map[int]int)
+	type chapterData struct {
+		total int
+		byCat map[string]int
+	}
+	chapterCounts := make(map[string]map[int]*chapterData)
 	for chRows.Next() {
-		var slug string
+		var slug, cat string
 		var ch, n int
-		if err := chRows.Scan(&slug, &ch, &n); err != nil {
+		if err := chRows.Scan(&slug, &ch, &cat, &n); err != nil {
 			log.Fatalf("scanning chapter count: %v", err)
 		}
 		if chapterCounts[slug] == nil {
-			chapterCounts[slug] = make(map[int]int)
+			chapterCounts[slug] = make(map[int]*chapterData)
 		}
-		chapterCounts[slug][ch] = n
+		if chapterCounts[slug][ch] == nil {
+			chapterCounts[slug][ch] = &chapterData{byCat: make(map[string]int)}
+		}
+		chapterCounts[slug][ch].total += n
+		chapterCounts[slug][ch].byCat[cat] = n
 	}
 	chRows.Close()
 
 	// Global works list with total ref counts
 	wRows, err := db.Query(`
-		SELECT m.id, m.author, m.title, m.year, m.filename,
+		SELECT m.id, m.author, m.title, m.year, m.filename, m.category,
 		       COUNT(vr.id) AS ref_count
 		FROM manuscripts m
 		LEFT JOIN verse_refs vr ON vr.manuscript_id = m.id
@@ -391,15 +402,16 @@ func buildIndex(db *sql.DB, onlyBook string) {
 		Title    string `json:"title"`
 		Year     *int   `json:"year"`
 		RefCount int    `json:"ref_count"`
+		Category string `json:"category"`
 	}
 	var globalWorks []globalWork
 	for wRows.Next() {
 		var id int64
-		var author, title sql.NullString
+		var author, title, category sql.NullString
 		var year sql.NullInt64
 		var filename string
 		var refCount int
-		if err := wRows.Scan(&id, &author, &title, &year, &filename, &refCount); err != nil {
+		if err := wRows.Scan(&id, &author, &title, &year, &filename, &category, &refCount); err != nil {
 			log.Fatalf("scanning global work: %v", err)
 		}
 		globalWorks = append(globalWorks, globalWork{
@@ -408,13 +420,15 @@ func buildIndex(db *sql.DB, onlyBook string) {
 			Title:    nullStringOr(title, filename),
 			Year:     nullInt64Ptr(year),
 			RefCount: refCount,
+			Category: nullStringOr(category, "Other"),
 		})
 	}
 	wRows.Close()
 
 	type chapterEntry struct {
-		Ch    int `json:"ch"`
-		Count int `json:"count"`
+		Ch    int            `json:"ch"`
+		Count int            `json:"count"`
+		ByCat map[string]int `json:"by_cat"`
 	}
 	type bookEntry struct {
 		Name     string         `json:"name"`
@@ -434,8 +448,8 @@ func buildIndex(db *sql.DB, onlyBook string) {
 		}
 		var chs []chapterEntry
 		for ch := 1; ch <= book.Chapters; ch++ {
-			if n, ok := counts[ch]; ok {
-				chs = append(chs, chapterEntry{Ch: ch, Count: n})
+			if cd, ok := counts[ch]; ok {
+				chs = append(chs, chapterEntry{Ch: ch, Count: cd.total, ByCat: cd.byCat})
 			}
 		}
 		if len(chs) > 0 {

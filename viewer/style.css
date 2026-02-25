@@ -35,12 +35,19 @@ body {
 header {
   background: var(--accent);
   color: #fff;
-  padding: .75rem 1.25rem;
+  padding: .6rem 1.25rem .5rem;
   flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: .4rem;
+}
+
+#header-top {
   display: flex;
   align-items: baseline;
   gap: 1rem;
 }
+
 header h1 { font-size: 1.4rem; font-weight: normal; letter-spacing: .04em; }
 .subtitle { font-size: .85rem; opacity: .75; font-style: italic; }
 
@@ -300,6 +307,30 @@ header h1 { font-size: 1.4rem; font-weight: normal; letter-spacing: .04em; }
   flex-direction: column;
   flex: 1;
   overflow: hidden;
+}
+
+#category-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .2rem .65rem;
+}
+
+#category-filters label {
+  display: flex;
+  align-items: center;
+  gap: .25rem;
+  font-size: .78rem;
+  color: rgba(255,255,255,.85);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+}
+
+#category-filters label:hover { color: #fff; }
+
+#category-filters input[type="checkbox"] {
+  accent-color: #fff;
+  cursor: pointer;
 }
 
 #works-search-wrap {

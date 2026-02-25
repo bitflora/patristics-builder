@@ -39,6 +39,7 @@ const workTitleEl      = document.getElementById("work-title");
 const workMetaEl       = document.getElementById("work-meta");
 const workRefsListEl   = document.getElementById("work-refs-list");
 const bookFilterEl     = document.getElementById("book-filter");
+const categoryFiltersEl = document.getElementById("category-filters");
 const modeTabEls       = document.querySelectorAll(".mode-tab");
 
 // ── Fetch helpers ─────────────────────────────────────────────────────────────
@@ -63,6 +64,16 @@ function heatLevel(count, max) {
   if (ratio < 0.40) return 2;
   if (ratio < 0.70) return 3;
   return 4;
+}
+
+// Return the ref count for a chapter entry, limited to the checked categories.
+function filteredCount(ch, cats) {
+  if (!ch.by_cat) return ch.count; // graceful fallback for old JSON format
+  let total = 0;
+  for (const [cat, n] of Object.entries(ch.by_cat)) {
+    if (cats.has(cat)) total += n;
+  }
+  return total;
 }
 
 // ── Mode switching ────────────────────────────────────────────────────────────
@@ -100,13 +111,21 @@ for (const tab of modeTabEls)
 // ── Sidebar rendering ─────────────────────────────────────────────────────────
 function renderSidebar(filter = "") {
   const term = filter.toLowerCase();
+  const cats = checkedCategories();
   bookListEl.innerHTML = "";
 
   for (const book of index.books) {
     if (term && !book.name.toLowerCase().includes(term)) continue;
 
-    const totalRefs = book.chapters.reduce((s, c) => s + c.count, 0);
-    const maxCount  = Math.max(...book.chapters.map(c => c.count));
+    // Build a filtered chapter list, computing counts relative to checked categories.
+    const filteredChs = book.chapters
+      .map(ch => ({ ch: ch.ch, count: filteredCount(ch, cats), by_cat: ch.by_cat }))
+      .filter(ch => ch.count > 0);
+
+    if (!filteredChs.length) continue;
+
+    const totalRefs = filteredChs.reduce((s, c) => s + c.count, 0);
+    const maxCount  = Math.max(...filteredChs.map(c => c.count));
 
     const entry = document.createElement("div");
     entry.className = "book-entry" + (book.slug === activeBook ? " open" : "");
@@ -125,7 +144,7 @@ function renderSidebar(filter = "") {
     row.className = "chapter-row";
     row.setAttribute("role", "list");
 
-    for (const ch of book.chapters) {
+    for (const ch of filteredChs) {
       const dot = document.createElement("button");
       dot.className = "ch-dot" + (book.slug === activeBook && ch.ch === activeChapter ? " active" : "");
       dot.dataset.heat = heatLevel(ch.count, maxCount);
@@ -220,6 +239,7 @@ function renderChapter(data) {
     const card = document.createElement("article");
     card.className = "ref-card";
     card.dataset.author = work.author;
+    card.dataset.category = work.category || "Other";
 
     const verseTag = ref.v
       ? `<span class="ref-verse-tag">v. ${ref.v}</span>`
@@ -240,25 +260,65 @@ function renderChapter(data) {
     refsListEl.appendChild(card);
   }
 
-  applyAuthorFilter();
+  applyCombinedFilter();
 }
 
-function applyAuthorFilter() {
-  const val = authorFilter.value;
+// Hide/show chapter-view ref cards based on both author dropdown and category checkboxes.
+function applyCombinedFilter() {
+  const authorVal = authorFilter.value;
+  const cats = checkedCategories();
   for (const card of refsListEl.querySelectorAll(".ref-card")) {
-    card.hidden = val && card.dataset.author !== val;
+    const hiddenByAuthor = authorVal && card.dataset.author !== authorVal;
+    const hiddenByCat   = !cats.has(card.dataset.category || "Other");
+    card.hidden = hiddenByAuthor || hiddenByCat;
   }
 }
 
-authorFilter.addEventListener("change", applyAuthorFilter);
+function applyAuthorFilter() { applyCombinedFilter(); }
+
+authorFilter.addEventListener("change", applyCombinedFilter);
+
+// ── Category filters ──────────────────────────────────────────────────────────
+function renderCategoryFilters() {
+  const categories = [...new Set(index.works.map(w => w.category || "Other"))].sort();
+  categoryFiltersEl.innerHTML = "";
+  for (const cat of categories) {
+    const label = document.createElement("label");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.value = cat;
+    cb.checked = true;
+    cb.addEventListener("change", applyFilters);
+    label.appendChild(cb);
+    label.appendChild(document.createTextNode(" " + cat));
+    categoryFiltersEl.appendChild(label);
+  }
+}
+
+function checkedCategories() {
+  const checked = new Set();
+  for (const cb of categoryFiltersEl.querySelectorAll("input[type=checkbox]")) {
+    if (cb.checked) checked.add(cb.value);
+  }
+  return checked;
+}
+
+// Re-render all views whenever the category filter changes.
+function applyFilters() {
+  renderSidebar(searchEl.value);
+  if (activeChapter !== null) applyCombinedFilter();
+  renderWorksList(worksSearchEl.value);
+}
 
 // ── Works sidebar ─────────────────────────────────────────────────────────────
 function renderWorksList(filter = "") {
   const term = filter.toLowerCase();
+  const cats = checkedCategories();
   worksListEl.innerHTML = "";
 
   for (const work of index.works) {
     if (term && !`${work.author} ${work.title}`.toLowerCase().includes(term)) continue;
+    if (cats.size && !cats.has(work.category || "Other")) continue;
 
     const btn = document.createElement("button");
     btn.className = "work-btn" + (work.id === activeWorkId ? " active" : "");
@@ -382,6 +442,7 @@ async function init() {
     return;
   }
 
+  renderCategoryFilters();
   renderSidebar();
   renderWorksList();
   showWelcome();

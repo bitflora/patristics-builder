@@ -71,7 +71,7 @@ def build_chapter(
             vr.verse_start, vr.verse_end,
             vr.passage_start_offset, vr.passage_end_offset,
             m.id AS manuscript_id,
-            m.filename, m.author, m.title, m.year, m.ccel_url
+            m.filename, m.author, m.title, m.year, m.ccel_url, m.category
         FROM verse_refs vr
         JOIN manuscripts m ON m.id = vr.manuscript_id
         WHERE vr.book_slug = ? AND vr.chapter = ?
@@ -98,6 +98,7 @@ def build_chapter(
                 "title": row["title"] or row["filename"],
                 "year": row["year"],
                 "filename": row["filename"],
+                "category": row["category"] or "Other",
             })
         work_idx = works_seen[mid]
 
@@ -131,25 +132,31 @@ def build_chapter(
 def build_index(conn, only_book: str | None = None) -> None:
     """Write data/static/index.json.gz."""
 
-    # All (book_slug, chapter, count) tuples with at least one reference
+    # Per-chapter reference counts broken down by category
     rows = conn.execute(
         """
-        SELECT book_slug, chapter, COUNT(*) AS n
-        FROM verse_refs
-        GROUP BY book_slug, chapter
-        ORDER BY book_slug, chapter
+        SELECT vr.book_slug, vr.chapter, COALESCE(m.category, 'Other') AS cat, COUNT(*) AS n
+        FROM verse_refs vr
+        JOIN manuscripts m ON m.id = vr.manuscript_id
+        GROUP BY vr.book_slug, vr.chapter, cat
+        ORDER BY vr.book_slug, vr.chapter
         """
     ).fetchall()
 
-    # Build a map: book_slug → {chapter → count}
-    chapter_counts: dict[str, dict[int, int]] = {}
+    # Build a map: book_slug → {chapter → {total, by_cat}}
+    chapter_counts: dict[str, dict[int, dict]] = {}
     for r in rows:
-        chapter_counts.setdefault(r["book_slug"], {})[r["chapter"]] = r["n"]
+        slug, ch = r["book_slug"], r["chapter"]
+        chapter_counts.setdefault(slug, {})
+        if ch not in chapter_counts[slug]:
+            chapter_counts[slug][ch] = {"total": 0, "by_cat": {}}
+        chapter_counts[slug][ch]["total"] += r["n"]
+        chapter_counts[slug][ch]["by_cat"][r["cat"]] = r["n"]
 
     # All manuscript metadata for the global works list, with ref counts
     works_rows = conn.execute(
         """
-        SELECT m.id, m.author, m.title, m.year, m.filename,
+        SELECT m.id, m.author, m.title, m.year, m.filename, m.category,
                COUNT(vr.id) AS ref_count
         FROM manuscripts m
         LEFT JOIN verse_refs vr ON vr.manuscript_id = m.id
@@ -164,6 +171,7 @@ def build_index(conn, only_book: str | None = None) -> None:
             "title": r["title"] or r["filename"],
             "year": r["year"],
             "ref_count": r["ref_count"],
+            "category": r["category"] or "Other",
         }
         for r in works_rows
     ]
@@ -177,7 +185,7 @@ def build_index(conn, only_book: str | None = None) -> None:
         if not counts:
             continue
         chapters_out = [
-            {"ch": ch, "count": counts[ch]}
+            {"ch": ch, "count": counts[ch]["total"], "by_cat": counts[ch]["by_cat"]}
             for ch in range(1, book["chapters"] + 1)
             if ch in counts
         ]
