@@ -474,6 +474,7 @@ function getCatColors() {
 function renderVizTab() {
   vizViewEl.innerHTML = '';
   const cats = checkedCategories();
+  const version = ++_vizVersion; // snapshot; async chart compares against this
   if (!cats.size) {
     vizViewEl.innerHTML = '<p class="no-refs" style="padding:.5rem 0">No categories selected.</p>';
     return;
@@ -481,7 +482,7 @@ function renderVizTab() {
   renderBibleHeatmap(cats);
   renderTopBooksChart(cats);
   renderWorksTimeline(cats);
-  renderBibleRefsByDate(cats); // async, fills in after data loads
+  renderBibleRefsByDate(cats, version); // async, fills in after data loads
   renderCategoryDonut(cats);
 }
 
@@ -704,6 +705,9 @@ function renderWorksTimeline(cats) {
 
 // ── 4. Bible References by Date ───────────────────────────────────────────────
 
+// Incremented each time renderVizTab() fires; lets async renders detect staleness.
+let _vizVersion = 0;
+
 // Cache: workId → refs array (passages discarded to save memory)
 const workRefsCache = new Map();
 
@@ -762,7 +766,7 @@ const BOOK_GROUP_COLORS = new Map([
   ['Revelation',     '#8a3a3a'],
 ]);
 
-async function renderBibleRefsByDate(cats) {
+async function renderBibleRefsByDate(cats, version) {
   const sec = makeVizSection('Bible References by Date');
 
   const worksWithYear = index.works
@@ -774,10 +778,15 @@ async function renderBibleRefsByDate(cats) {
     return;
   }
 
-  const loadingEl = document.createElement('p');
-  loadingEl.className = 'loading';
-  loadingEl.textContent = `Loading citation data for ${worksWithYear.length} works…`;
-  sec.appendChild(loadingEl);
+  // Only show a loading indicator when some works aren't cached yet
+  const uncachedCount = worksWithYear.filter(w => !workRefsCache.has(w.id)).length;
+  let loadingEl = null;
+  if (uncachedCount > 0) {
+    loadingEl = document.createElement('p');
+    loadingEl.className = 'loading';
+    loadingEl.textContent = `Loading citation data for ${uncachedCount} work${uncachedCount !== 1 ? 's' : ''}…`;
+    sec.appendChild(loadingEl);
+  }
 
   // Fetch all work ref lists in parallel (cached after first load)
   const workRefsData = await Promise.all(
@@ -792,9 +801,9 @@ async function renderBibleRefsByDate(cats) {
     })
   );
 
-  // Abort if this section was cleared from the DOM while loading
-  if (!sec.isConnected) return;
-  loadingEl.remove();
+  // Abort if a newer renderVizTab() call has already replaced us
+  if (_vizVersion !== version) return;
+  if (loadingEl) loadingEl.remove();
 
   const activeGroups = BOOK_GROUP_ORDER.filter(g =>
     workRefsData.some(d => d.groupCounts.has(g))
@@ -812,11 +821,11 @@ async function renderBibleRefsByDate(cats) {
   // Pick a bucket size that gives roughly 6–10 columns
   const BUCKET = yearSpan < 200 ? 25 : yearSpan < 500 ? 50 : yearSpan < 1000 ? 100 : yearSpan < 2000 ? 200 : 500;
 
-  // Add description now that we know the bucket size
+  // Add description now that we know the bucket size (insert after the <h3> heading)
   const desc = document.createElement('p');
   desc.className = 'viz-desc';
   desc.textContent = `Proportional share of Bible citations going to each section of Scripture per ${BUCKET}-year period. Hover a segment for details.`;
-  sec.insertBefore(desc, sec.querySelector('.loading') || sec.firstChild.nextSibling);
+  sec.insertBefore(desc, sec.firstChild.nextSibling);
 
   // Build buckets
   const firstBucket = Math.floor(minYear / BUCKET) * BUCKET;
