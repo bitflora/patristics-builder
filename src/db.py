@@ -26,7 +26,8 @@ def create_schema(db_path: Path = DB_PATH) -> None:
                 author   TEXT,
                 title    TEXT,
                 year     INTEGER,
-                ccel_url TEXT
+                ccel_url TEXT,
+                category TEXT
             );
 
             CREATE TABLE IF NOT EXISTS verse_refs (
@@ -54,7 +55,7 @@ def create_schema(db_path: Path = DB_PATH) -> None:
 
 def upsert_manuscript(conn: sqlite3.Connection, filename: str, author: str | None = None,
                        title: str | None = None, year: int | None = None,
-                       ccel_url: str | None = None) -> int:
+                       ccel_url: str | None = None, category: str | None = None) -> int:
     """Insert or update a manuscript record, returning its id."""
     cur = conn.execute(
         "SELECT id FROM manuscripts WHERE filename = ?", (filename,)
@@ -62,15 +63,15 @@ def upsert_manuscript(conn: sqlite3.Connection, filename: str, author: str | Non
     row = cur.fetchone()
     if row:
         conn.execute(
-            """UPDATE manuscripts SET author=?, title=?, year=?, ccel_url=?
+            """UPDATE manuscripts SET author=?, title=?, year=?, ccel_url=?, category=?
                WHERE id=?""",
-            (author, title, year, ccel_url, row["id"])
+            (author, title, year, ccel_url, category, row["id"])
         )
         return row["id"]
     cur = conn.execute(
-        """INSERT INTO manuscripts (filename, author, title, year, ccel_url)
-           VALUES (?, ?, ?, ?, ?)""",
-        (filename, author, title, year, ccel_url)
+        """INSERT INTO manuscripts (filename, author, title, year, ccel_url, category)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (filename, author, title, year, ccel_url, category)
     )
     return cur.lastrowid
 
