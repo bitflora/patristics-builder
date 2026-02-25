@@ -19,7 +19,7 @@ let worksById = new Map(); // manuscript id → work entry (from index)
 const bookCache = new Map(); // book slug → parsed book payload
 let activeBook = null;    // slug
 let activeChapter = null; // number
-let activeMode = "scripture";  // "scripture" | "works"
+let activeMode = "viz";  // "scripture" | "works" | "viz"
 let activeWorkId = null;       // numeric manuscript id
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
@@ -32,6 +32,7 @@ const chapterTitle     = document.getElementById("chapter-title");
 const refsListEl       = document.getElementById("refs-list");
 const authorFilter     = document.getElementById("author-filter");
 // Works mode DOM refs
+const sidebarEl        = document.getElementById("sidebar");
 const scripturePanelEl = document.getElementById("scripture-panel");
 const worksPanelEl     = document.getElementById("works-panel");
 const worksListEl      = document.getElementById("works-list");
@@ -43,6 +44,8 @@ const workRefsListEl   = document.getElementById("work-refs-list");
 const bookFilterEl     = document.getElementById("book-filter");
 const categoryFiltersEl = document.getElementById("category-filters");
 const modeTabEls       = document.querySelectorAll(".mode-tab");
+// Visualizations mode DOM ref
+const vizViewEl        = document.getElementById("viz-view");
 
 // ── Fetch helpers ─────────────────────────────────────────────────────────────
 async function fetchJSON(url) {
@@ -85,13 +88,23 @@ function setMode(mode) {
     tab.classList.toggle("active", tab.dataset.mode === mode);
 
   const isScripture = mode === "scripture";
-  scripturePanelEl.hidden = !isScripture;
-  worksPanelEl.hidden = isScripture;
+  const isWorks     = mode === "works";
+  const isViz       = mode === "viz";
 
-  if (isScripture) {
+  scripturePanelEl.hidden = !isScripture;
+  worksPanelEl.hidden     = !isWorks;
+  sidebarEl.hidden        = isViz;
+  vizViewEl.hidden        = !isViz;
+
+  if (isViz) {
+    welcomeEl.hidden    = true;
+    chapterViewEl.hidden = true;
+    workViewEl.hidden   = true;
+    renderVizTab();
+  } else if (isScripture) {
     workViewEl.hidden = true;
     if (activeChapter !== null) {
-      welcomeEl.hidden = true;
+      welcomeEl.hidden    = true;
       chapterViewEl.hidden = false;
     } else {
       showWelcome();
@@ -99,7 +112,7 @@ function setMode(mode) {
   } else {
     chapterViewEl.hidden = true;
     if (activeWorkId !== null) {
-      welcomeEl.hidden = true;
+      welcomeEl.hidden  = true;
       workViewEl.hidden = false;
     } else {
       showWelcome();
@@ -318,6 +331,7 @@ function applyFilters() {
   renderSidebar(searchEl.value);
   if (activeChapter !== null) applyCombinedFilter();
   renderWorksList(worksSearchEl.value);
+  if (activeMode === "viz") renderVizTab();
 }
 
 // ── Works sidebar ─────────────────────────────────────────────────────────────
@@ -443,6 +457,307 @@ function esc(str) {
     .replace(/"/g, "&quot;");
 }
 
+// ── Visualizations ────────────────────────────────────────────────────────────
+
+// Earthy palette that complements the app's warm brown theme
+const CAT_PALETTE = ['#7a5c38','#4a8c6a','#5c7aa8','#9a6b4b','#7a4a6a','#5c8a5c','#8a7a4a','#6a5c8a'];
+let _catColorMap = null;
+
+function getCatColors() {
+  if (!_catColorMap) {
+    const cats = [...new Set(index.works.map(w => w.category || 'Other'))].sort();
+    _catColorMap = new Map(cats.map((c, i) => [c, CAT_PALETTE[i % CAT_PALETTE.length]]));
+  }
+  return _catColorMap;
+}
+
+function renderVizTab() {
+  vizViewEl.innerHTML = '';
+  const cats = checkedCategories();
+  if (!cats.size) {
+    vizViewEl.innerHTML = '<p class="no-refs" style="padding:.5rem 0">No categories selected.</p>';
+    return;
+  }
+  renderBibleHeatmap(cats);
+  renderTopBooksChart(cats);
+  renderWorksTimeline(cats);
+  renderCategoryDonut(cats);
+}
+
+// Helper: append a new viz section to vizViewEl, return the element
+function makeVizSection(title) {
+  const sec = document.createElement('section');
+  sec.className = 'viz-section';
+  const h = document.createElement('h3');
+  h.className = 'viz-heading';
+  h.textContent = title;
+  sec.appendChild(h);
+  vizViewEl.appendChild(sec);
+  return sec;
+}
+
+// Navigate from viz to a book in Scripture mode
+function navigateToBook(slug) {
+  activeBook = slug;
+  activeChapter = null;
+  setMode('scripture');
+  renderSidebar(searchEl.value);
+}
+
+// Fixed-point helper for SVG coords
+function f(n) { return n.toFixed(2); }
+
+// ── 1. Bible Coverage Heatmap ─────────────────────────────────────────────────
+function renderBibleHeatmap(cats) {
+  const sec = makeVizSection('Bible Coverage');
+  const desc = document.createElement('p');
+  desc.className = 'viz-desc';
+  desc.textContent = 'Each block is a Bible book. Color intensity reflects citation density. Click to browse.';
+  sec.appendChild(desc);
+
+  const maxTotal = Math.max(1, ...index.books.map(b =>
+    b.chapters.reduce((s, ch) => s + filteredCount(ch, cats), 0)
+  ));
+
+  const grid = document.createElement('div');
+  grid.className = 'viz-heatmap';
+
+  for (const book of index.books) {
+    const total = book.chapters.reduce((s, ch) => s + filteredCount(ch, cats), 0);
+    const cell = document.createElement('button');
+    cell.className = 'viz-book-cell';
+    cell.dataset.heat = heatLevel(total, maxTotal);
+    cell.title = `${book.name}: ${total} reference${total !== 1 ? 's' : ''}`;
+    cell.innerHTML = `<span class="vbc-name">${esc(book.name)}</span>${total ? `<span class="vbc-count">${total}</span>` : ''}`;
+    if (total > 0) {
+      cell.addEventListener('click', () => navigateToBook(book.slug));
+    } else {
+      cell.disabled = true;
+    }
+    grid.appendChild(cell);
+  }
+  sec.appendChild(grid);
+}
+
+// ── 2. Top Books Bar Chart ────────────────────────────────────────────────────
+function renderTopBooksChart(cats) {
+  const sec = makeVizSection('Most Referenced Books');
+  const colors = getCatColors();
+
+  const bookData = index.books.map(book => {
+    const byCat = {};
+    let total = 0;
+    for (const ch of book.chapters) {
+      for (const [cat, n] of Object.entries(ch.by_cat || {})) {
+        if (cats.has(cat)) { byCat[cat] = (byCat[cat] || 0) + n; total += n; }
+      }
+    }
+    return { name: book.name, slug: book.slug, total, byCat };
+  }).filter(b => b.total > 0).sort((a, b) => b.total - a.total).slice(0, 20);
+
+  if (!bookData.length) { sec.innerHTML += '<p class="no-refs">No data.</p>'; return; }
+
+  const maxVal = bookData[0].total;
+  const allCats = [...cats].sort();
+  const ROW_H = 28, LBL_W = 145, BAR_MAX = 380, SVG_W = LBL_W + BAR_MAX + 55;
+  const SVG_H = bookData.length * ROW_H + 8;
+
+  let s = [`<svg class="viz-svg" viewBox="0 0 ${SVG_W} ${SVG_H}">`];
+
+  for (let i = 0; i < bookData.length; i++) {
+    const book = bookData[i];
+    const y = i * ROW_H + 4;
+    const label = book.name.length > 20 ? book.name.slice(0, 19) + '…' : book.name;
+    s.push(`<text x="${LBL_W - 6}" y="${y + 14}" class="viz-bar-label" text-anchor="end">${esc(label)}</text>`);
+
+    let xOff = LBL_W;
+    for (const cat of allCats) {
+      const n = book.byCat[cat] || 0;
+      if (!n) continue;
+      const w = Math.max(1, (n / maxVal) * BAR_MAX);
+      const col = colors.get(cat) || '#7a5c38';
+      s.push(`<rect x="${f(xOff)}" y="${y}" width="${f(w)}" height="18" fill="${col}" rx="2"><title>${esc(cat)}: ${n}</title></rect>`);
+      xOff += w;
+    }
+    // Invisible hit target for click-to-navigate
+    const totalW = Math.max(1, (book.total / maxVal) * BAR_MAX);
+    s.push(`<rect x="${LBL_W}" y="${y}" width="${f(totalW)}" height="18" fill="transparent" class="viz-bar-hit" data-slug="${esc(book.slug)}"/>`);
+    s.push(`<text x="${f(LBL_W + (book.total / maxVal) * BAR_MAX + 5)}" y="${y + 14}" class="viz-bar-count">${book.total}</text>`);
+  }
+  s.push('</svg>');
+
+  const wrap = document.createElement('div');
+  wrap.className = 'viz-chart-wrap';
+  wrap.innerHTML = s.join('');
+  wrap.querySelector('svg').addEventListener('click', e => {
+    const hit = e.target.closest('[data-slug]');
+    if (hit) navigateToBook(hit.getAttribute('data-slug'));
+  });
+  sec.appendChild(wrap);
+  sec.appendChild(buildCatLegend(allCats, colors));
+}
+
+// ── 3. Works Timeline ─────────────────────────────────────────────────────────
+function renderWorksTimeline(cats) {
+  const sec = makeVizSection('Works by Date');
+  const colors = getCatColors();
+
+  const withYear = index.works
+    .filter(w => w.year != null && cats.has(w.category || 'Other'))
+    .sort((a, b) => a.year - b.year);
+  const noYear = index.works.filter(w => w.year == null && cats.has(w.category || 'Other'));
+
+  if (!withYear.length && !noYear.length) { sec.innerHTML += '<p class="no-refs">No data.</p>'; return; }
+
+  if (withYear.length) {
+    const minYear = withYear[0].year;
+    const maxYear = withYear[withYear.length - 1].year;
+    const yearSpan = Math.max(maxYear - minYear, 1);
+    const maxRefs  = Math.max(...withYear.map(w => w.ref_count || 0), 1);
+
+    // Category lanes (only cats with dated works)
+    const catList = [...new Set(withYear.map(w => w.category || 'Other'))].sort();
+    const SVG_W = 680, PAD_L = 10, PAD_R = 10, PAD_T = 12, PAD_B = 32;
+    const PLOT_W = SVG_W - PAD_L - PAD_R;
+    const PLOT_H = Math.max(80, catList.length * 40);
+    const SVG_H  = PLOT_H + PAD_T + PAD_B;
+    const bandH  = PLOT_H / catList.length;
+
+    const xOf = yr => PAD_L + ((yr - minYear) / yearSpan) * PLOT_W;
+    const rOf = r  => Math.max(3, Math.min(13, 3 + ((r || 0) / maxRefs) * 10));
+
+    // Pick nice year tick step
+    const rawStep = yearSpan / 5;
+    const mag = Math.pow(10, Math.floor(Math.log10(rawStep)));
+    const tickStep = [1, 2, 5, 10].map(n => n * mag).find(s => yearSpan / s <= 8 && yearSpan / s >= 2) || mag * 10;
+
+    let s = [`<svg class="viz-svg" viewBox="0 0 ${SVG_W} ${SVG_H}">`];
+
+    // Alternating band backgrounds
+    for (let i = 0; i < catList.length; i++) {
+      if (i % 2 === 0) continue;
+      const by = PAD_T + i * bandH;
+      s.push(`<rect x="${PAD_L}" y="${f(by)}" width="${PLOT_W}" height="${f(bandH)}" fill="rgba(0,0,0,0.03)"/>`);
+    }
+
+    // Axis
+    s.push(`<line x1="${PAD_L}" y1="${SVG_H - PAD_B}" x2="${SVG_W - PAD_R}" y2="${SVG_H - PAD_B}" stroke="var(--border)" stroke-width="1"/>`);
+
+    // Year ticks
+    const firstTick = Math.ceil(minYear / tickStep) * tickStep;
+    for (let yr = firstTick; yr <= maxYear; yr += tickStep) {
+      const tx = xOf(yr);
+      s.push(`<line x1="${f(tx)}" y1="${SVG_H - PAD_B}" x2="${f(tx)}" y2="${SVG_H - PAD_B + 4}" stroke="var(--muted)" stroke-width="1"/>`);
+      s.push(`<text x="${f(tx)}" y="${SVG_H - PAD_B + 14}" class="viz-axis-label" text-anchor="middle">${yr}</text>`);
+    }
+
+    // Dots per category lane
+    for (const work of withYear) {
+      const catIdx = catList.indexOf(work.category || 'Other');
+      const x = xOf(work.year);
+      const r = rOf(work.ref_count);
+      const y = PAD_T + (catIdx + 0.5) * bandH;
+      const col = colors.get(work.category || 'Other') || '#7a5c38';
+      const tip = `${work.author} — ${work.title} (${work.year}) · ${work.ref_count || 0} refs`;
+      s.push(`<circle cx="${f(x)}" cy="${f(y)}" r="${r}" fill="${col}" opacity="0.75" stroke="rgba(255,255,255,0.5)" stroke-width="0.5"><title>${esc(tip)}</title></circle>`);
+    }
+
+    s.push('</svg>');
+    const wrap = document.createElement('div');
+    wrap.className = 'viz-chart-wrap';
+    wrap.innerHTML = s.join('');
+    sec.appendChild(wrap);
+    sec.appendChild(buildCatLegend(catList, colors));
+  }
+
+  if (noYear.length) {
+    const p = document.createElement('p');
+    p.className = 'viz-timeline-unknown';
+    p.textContent = `${noYear.length} work${noYear.length !== 1 ? 's' : ''} without a known date not shown.`;
+    sec.appendChild(p);
+  }
+}
+
+// ── 4. Category Donut ─────────────────────────────────────────────────────────
+function renderCategoryDonut(cats) {
+  const sec = makeVizSection('Corpus by Category');
+  const colors = getCatColors();
+
+  const catTotals = new Map();
+  for (const book of index.books) {
+    for (const ch of book.chapters) {
+      for (const [cat, n] of Object.entries(ch.by_cat || {})) {
+        if (cats.has(cat)) catTotals.set(cat, (catTotals.get(cat) || 0) + n);
+      }
+    }
+  }
+  const entries = [...catTotals.entries()].sort((a, b) => b[1] - a[1]);
+  const total   = entries.reduce((s, [, n]) => s + n, 0);
+
+  if (!total) { sec.innerHTML += '<p class="no-refs">No data.</p>'; return; }
+
+  const CX = 110, CY = 110, R = 88, INNER_R = 52;
+
+  let s = [`<svg class="viz-donut" viewBox="0 0 220 220">`];
+
+  if (entries.length === 1) {
+    const col = colors.get(entries[0][0]) || '#7a5c38';
+    s.push(`<circle cx="${CX}" cy="${CY}" r="${R}" fill="${col}"/>`);
+    s.push(`<circle cx="${CX}" cy="${CY}" r="${INNER_R}" fill="var(--bg-card)"/>`);
+  } else {
+    let angle = -Math.PI / 2;
+    for (const [cat, n] of entries) {
+      const slice = (n / total) * 2 * Math.PI;
+      const end = angle + slice;
+      const x1 = CX + R * Math.cos(angle), y1 = CY + R * Math.sin(angle);
+      const x2 = CX + R * Math.cos(end),   y2 = CY + R * Math.sin(end);
+      const ix1 = CX + INNER_R * Math.cos(end),   iy1 = CY + INNER_R * Math.sin(end);
+      const ix2 = CX + INNER_R * Math.cos(angle), iy2 = CY + INNER_R * Math.sin(angle);
+      const large = slice > Math.PI ? 1 : 0;
+      const col = colors.get(cat) || '#7a5c38';
+      const path = `M ${f(x1)} ${f(y1)} A ${R} ${R} 0 ${large} 1 ${f(x2)} ${f(y2)} L ${f(ix1)} ${f(iy1)} A ${INNER_R} ${INNER_R} 0 ${large} 0 ${f(ix2)} ${f(iy2)} Z`;
+      s.push(`<path d="${path}" fill="${col}" stroke="var(--bg-card)" stroke-width="2"><title>${esc(cat)}: ${n.toLocaleString()} (${Math.round(n / total * 100)}%)</title></path>`);
+      angle = end;
+    }
+  }
+
+  // Center label
+  s.push(`<text x="${CX}" y="${CY - 6}" class="viz-donut-num" text-anchor="middle">${total.toLocaleString()}</text>`);
+  s.push(`<text x="${CX}" y="${CY + 13}" class="viz-donut-lbl" text-anchor="middle">total refs</text>`);
+  s.push('</svg>');
+
+  const wrap = document.createElement('div');
+  wrap.className = 'viz-donut-wrap';
+  wrap.innerHTML = s.join('');
+  sec.appendChild(wrap);
+
+  // Stats legend
+  const stats = document.createElement('div');
+  stats.className = 'viz-legend viz-donut-stats';
+  for (const [cat, n] of entries) {
+    const col = colors.get(cat) || '#888';
+    const pct = Math.round(n / total * 100);
+    const item = document.createElement('span');
+    item.className = 'viz-legend-item';
+    item.innerHTML = `<span class="viz-legend-swatch" style="background:${col}"></span>${esc(cat)}: <strong>${n.toLocaleString()}</strong> (${pct}%)`;
+    stats.appendChild(item);
+  }
+  sec.appendChild(stats);
+}
+
+// Shared colored category legend row
+function buildCatLegend(allCats, colors) {
+  const div = document.createElement('div');
+  div.className = 'viz-legend';
+  for (const cat of allCats) {
+    const item = document.createElement('span');
+    item.className = 'viz-legend-item';
+    item.innerHTML = `<span class="viz-legend-swatch" style="background:${colors.get(cat) || '#888'}"></span>${esc(cat)}`;
+    div.appendChild(item);
+  }
+  return div;
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
   try {
@@ -460,7 +775,7 @@ async function init() {
   renderCategoryFilters();
   renderSidebar();
   renderWorksList();
-  showWelcome();
+  setMode('viz');
 }
 
 searchEl.addEventListener("input", () => renderSidebar(searchEl.value));

@@ -462,3 +462,131 @@ header h1 { font-size: 1.4rem; font-weight: normal; letter-spacing: .04em; }
   flex-direction: column;
   gap: 1rem;
 }
+
+/* ── Visualizations Tab ───────────────────────────────────────────────────── */
+#viz-view {
+  /* inherits #content-body padding */
+}
+
+.viz-section {
+  margin-bottom: 2.5rem;
+}
+
+.viz-heading {
+  font-size: 1.1rem;
+  font-weight: normal;
+  color: var(--accent);
+  margin-bottom: .6rem;
+  padding-bottom: .4rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.viz-desc {
+  font-size: .85rem;
+  color: var(--muted);
+  font-style: italic;
+  margin-bottom: .75rem;
+}
+
+/* ── Bible coverage heatmap ───────────────────────────────────────────────── */
+.viz-heatmap {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 4px;
+}
+
+.viz-book-cell {
+  display: flex;
+  flex-direction: column;
+  padding: 5px 8px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  background: var(--heat-0);
+  font-family: inherit;
+  text-align: left;
+  color: var(--text);
+  transition: filter .1s;
+}
+
+.viz-book-cell[data-heat="1"] { background: var(--heat-1); }
+.viz-book-cell[data-heat="2"] { background: var(--heat-2); color: #fff; border-color: transparent; }
+.viz-book-cell[data-heat="3"] { background: var(--heat-3); color: #fff; border-color: transparent; }
+.viz-book-cell[data-heat="4"] { background: var(--heat-4); color: #fff; border-color: transparent; }
+.viz-book-cell:hover:not(:disabled) { filter: brightness(.88); }
+.viz-book-cell:disabled { opacity: .4; cursor: default; }
+
+.vbc-name  { font-size: .78rem; display: block; line-height: 1.3; }
+.vbc-count { font-size: .68rem; opacity: .72; display: block; margin-top: 2px; }
+
+/* ── SVG charts ───────────────────────────────────────────────────────────── */
+.viz-chart-wrap { overflow-x: auto; }
+
+.viz-svg {
+  width: 100%;
+  max-width: 700px;
+  height: auto;
+  display: block;
+}
+
+.viz-bar-label { font-size: 11px; fill: var(--text);  font-family: Georgia, serif; }
+.viz-bar-count  { font-size: 10px; fill: var(--muted); font-family: Georgia, serif; }
+.viz-axis-label { font-size: 10px; fill: var(--muted); font-family: Georgia, serif; }
+.viz-bar-hit    { cursor: pointer; }
+
+/* ── Donut chart ──────────────────────────────────────────────────────────── */
+.viz-donut-wrap { display: flex; }
+
+.viz-donut {
+  width: 100%;
+  max-width: 220px;
+  height: auto;
+  display: block;
+}
+
+.viz-donut-num {
+  font-size: 17px;
+  font-weight: bold;
+  font-family: Georgia, serif;
+  fill: var(--text);
+}
+
+.viz-donut-lbl {
+  font-size: 10px;
+  fill: var(--muted);
+  font-family: Georgia, serif;
+}
+
+/* ── Category legend ──────────────────────────────────────────────────────── */
+.viz-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .35rem .8rem;
+  margin-top: .75rem;
+  font-size: .82rem;
+  color: var(--text);
+}
+
+.viz-legend-item {
+  display: flex;
+  align-items: center;
+  gap: .3rem;
+}
+
+.viz-legend-swatch {
+  width: 11px;
+  height: 11px;
+  border-radius: 2px;
+  flex-shrink: 0;
+  display: inline-block;
+}
+
+.viz-donut-stats             { flex-direction: column; gap: .4rem; margin-top: 1rem; }
+.viz-donut-stats .viz-legend-item { font-size: .88rem; }
+
+.viz-timeline-unknown {
+  font-size: .82rem;
+  color: var(--muted);
+  font-style: italic;
+  margin-top: .5rem;
+}

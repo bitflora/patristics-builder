@@ -1,1 +1,0 @@
-- Delete ASV from the database and source material, or at least figure out why it shows a reference on every chapter 1

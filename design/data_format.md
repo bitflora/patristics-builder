@@ -3,7 +3,7 @@
 ## Pipeline
 
 ```
-manuscripts/*.txt  →  parser.py  →  data/patristics.db  →  builder.py  →  data/static/**  →  viewer/
+manuscripts/*.txt  →  parser.py  →  data/patristics.db  →  go run ./cmd/builder --clean  →  data/static/**  →  viewer/
 ```
 
 ## SQLite Schema
@@ -38,9 +38,9 @@ The database is a **pure index** — no passage text is stored in it. All text l
 
 ## JSON Output
 
-All output files are gzip-compressed (`.json.gz`).
+All output files are zstd-compressed (`.json.zst`).
 
-### Per-chapter: `data/static/bible/{book-slug}/{chapter}.json.gz`
+### Per-chapter: `data/static/bible/{book-slug}/{chapter}.json.zst`
 ```json
 {
   "book": "Romans",
@@ -60,7 +60,7 @@ All output files are gzip-compressed (`.json.gz`).
 - `v: "13-17"` → verse range
 - `w` → 0-based index into the `works` array (deduplicates author/title metadata)
 
-### Index: `data/static/index.json.gz` (unchanged)
+### Index: `data/static/index.json.zst` (unchanged)
 ```json
 {
   "books": [
@@ -76,7 +76,7 @@ All output files are gzip-compressed (`.json.gz`).
 ```
 Chapter counts in the index allow the viewer to display reference heatmaps without loading all chapter files. `ref_count` on each work enables the Works view to show how many references each manuscript makes.
 
-### Per-manuscript: `data/static/manuscripts/{id}.json.gz`
+### Per-manuscript: `data/static/manuscripts/{id}.json.zst`
 ```json
 {
   "id": 5,
