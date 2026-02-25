@@ -17,35 +17,31 @@ var multiBlankRe = regexp.MustCompile(`\n{3,}`)
 
 // ── JSON output types ─────────────────────────────────────────────────────────
 
-// workEntry is a manuscript entry in a chapter's deduplicated works list.
-type workEntry struct {
-	ID       int    `json:"id"`
-	Author   string `json:"author"`
-	Title    string `json:"title"`
-	Year     *int   `json:"year"`
-	Filename string `json:"filename"`
-	Category string `json:"category"`
+// bookRef is a single citation record within a book file.
+type bookRef struct {
+	V *string `json:"v"`  // verse label, nil for chapter-level refs → JSON null
+	W int64   `json:"w"`  // manuscript ID (look up in index.works)
+	P int     `json:"p"`  // index into the book's passages array
 }
 
-// chapterRef is a single citation record within a chapter file.
-type chapterRef struct {
-	V    *string `json:"v"`    // verse label, nil for chapter-level refs → JSON null
-	W    int     `json:"w"`    // index into the chapter's works list
-	Text string  `json:"text"` // extracted passage text
+// bookChapter holds all refs for one chapter within a book file.
+type bookChapter struct {
+	Ch   int       `json:"ch"`
+	Refs []bookRef `json:"refs"`
 }
 
-// chapterPayload is the top-level structure for data/static/bible/{slug}/{ch}.json.zst.
-type chapterPayload struct {
-	Book    string       `json:"book"`
-	Chapter int          `json:"chapter"`
-	Works   []workEntry  `json:"works"`
-	Refs    []chapterRef `json:"refs"`
+// bookPayload is the top-level structure for data/static/bible/{slug}.json.zst.
+type bookPayload struct {
+	Book     string        `json:"book"`
+	Passages []string      `json:"passages"`
+	Chapters []bookChapter `json:"chapters"`
 }
 
-// chapterKey identifies a distinct (book_slug, chapter) pair.
-type chapterKey struct {
-	slug    string
-	chapter int
+// passKey uniquely identifies a passage span within a manuscript file.
+type passKey struct {
+	filename string
+	start    int
+	end      int
 }
 
 // ── Passage extraction ────────────────────────────────────────────────────────
@@ -90,39 +86,39 @@ func verseLabel(start, end sql.NullInt64) *string {
 	return &s
 }
 
-// ── Chapter building ──────────────────────────────────────────────────────────
+// ── Book building ──────────────────────────────────────────────────────────────
 
-func queryDistinctChapters(db *sql.DB, onlyBook string) []chapterKey {
+func queryDistinctBooks(db *sql.DB, onlyBook string) []string {
 	var rows *sql.Rows
 	var err error
 	if onlyBook != "" {
 		rows, err = db.Query(
-			"SELECT DISTINCT book_slug, chapter FROM verse_refs WHERE book_slug = ? ORDER BY book_slug, chapter",
+			"SELECT DISTINCT book_slug FROM verse_refs WHERE book_slug = ? ORDER BY book_slug",
 			onlyBook,
 		)
 	} else {
 		rows, err = db.Query(
-			"SELECT DISTINCT book_slug, chapter FROM verse_refs ORDER BY book_slug, chapter",
+			"SELECT DISTINCT book_slug FROM verse_refs ORDER BY book_slug",
 		)
 	}
 	if err != nil {
-		log.Fatalf("querying distinct chapters: %v", err)
+		log.Fatalf("querying distinct books: %v", err)
 	}
 	defer rows.Close()
 
-	var result []chapterKey
+	var result []string
 	for rows.Next() {
-		var ck chapterKey
-		if err := rows.Scan(&ck.slug, &ck.chapter); err != nil {
-			log.Fatalf("scanning chapter row: %v", err)
+		var slug string
+		if err := rows.Scan(&slug); err != nil {
+			log.Fatalf("scanning book row: %v", err)
 		}
-		result = append(result, ck)
+		result = append(result, slug)
 	}
 	return result
 }
 
-// buildChapter writes one chapter JSON.gz file. Returns the number of refs written.
-func buildChapter(db *sql.DB, cache map[string][]rune, bookSlug string, chapter int) int {
+// buildBook writes one book JSON.zst file containing all chapters. Returns total refs written.
+func buildBook(db *sql.DB, cache map[string][]rune, bookSlug string) int {
 	book, ok := bySlug[bookSlug]
 	if !ok {
 		return 0
@@ -130,114 +126,125 @@ func buildChapter(db *sql.DB, cache map[string][]rune, bookSlug string, chapter 
 
 	rows, err := db.Query(`
 		SELECT
+			vr.chapter,
 			vr.verse_start, vr.verse_end,
 			vr.passage_start_offset, vr.passage_end_offset,
 			m.id AS manuscript_id,
-			m.filename, m.author, m.title, m.year, m.category
+			m.filename
 		FROM verse_refs vr
 		JOIN manuscripts m ON m.id = vr.manuscript_id
-		WHERE vr.book_slug = ? AND vr.chapter = ?
-		ORDER BY vr.verse_start NULLS LAST, m.author, m.title
-	`, bookSlug, chapter)
+		WHERE vr.book_slug = ?
+		ORDER BY vr.chapter, vr.verse_start NULLS LAST, m.author, m.title
+	`, bookSlug)
 	if err != nil {
-		log.Printf("querying chapter %s %d: %v", bookSlug, chapter, err)
+		log.Printf("querying book %s: %v", bookSlug, err)
 		return 0
 	}
 	defer rows.Close()
 
-	worksSeen := make(map[int64]int)
-	var worksList []workEntry
-	var refs []chapterRef
+	// Passage deduplication pool for this book.
+	passIdx := make(map[passKey]int)
+	var passages []string
+
+	// Collect refs per chapter, building the passage pool as we go.
+	chapterMap := make(map[int][]bookRef)
+	var chapterOrder []int
+	seenCh := make(map[int]bool)
 
 	for rows.Next() {
+		var chapter int
 		var verseStart, verseEnd sql.NullInt64
 		var passStart, passEnd int64
 		var mID int64
 		var filename string
-		var author, title, category sql.NullString
-		var year sql.NullInt64
 
-		if err := rows.Scan(&verseStart, &verseEnd, &passStart, &passEnd,
-			&mID, &filename, &author, &title, &year, &category); err != nil {
-			log.Printf("scanning ref row for %s %d: %v", bookSlug, chapter, err)
+		if err := rows.Scan(&chapter, &verseStart, &verseEnd, &passStart, &passEnd,
+			&mID, &filename); err != nil {
+			log.Printf("scanning ref row for %s: %v", bookSlug, err)
 			continue
 		}
 
-		if _, seen := worksSeen[mID]; !seen {
-			worksSeen[mID] = len(worksList)
-			worksList = append(worksList, workEntry{
-				ID:       len(worksList),
-				Author:   nullStringOr(author, "Unknown"),
-				Title:    nullStringOr(title, filename),
-				Year:     nullInt64Ptr(year),
-				Filename: filename,
-				Category: nullStringOr(category, "Other"),
-			})
+		if !seenCh[chapter] {
+			seenCh[chapter] = true
+			chapterOrder = append(chapterOrder, chapter)
 		}
-		workIdx := worksSeen[mID]
 
-		text := readPassage(cache, filename, int(passStart), int(passEnd))
-		refs = append(refs, chapterRef{
-			V:    verseLabel(verseStart, verseEnd),
-			W:    workIdx,
-			Text: text,
+		k := passKey{filename, int(passStart), int(passEnd)}
+		idx, found := passIdx[k]
+		if !found {
+			idx = len(passages)
+			passIdx[k] = idx
+			passages = append(passages, readPassage(cache, filename, int(passStart), int(passEnd)))
+		}
+
+		chapterMap[chapter] = append(chapterMap[chapter], bookRef{
+			V: verseLabel(verseStart, verseEnd),
+			W: mID,
+			P: idx,
 		})
 	}
 
-	if len(refs) == 0 {
+	if len(chapterOrder) == 0 {
 		return 0
 	}
 
-	payload := chapterPayload{
-		Book:    book.Name,
-		Chapter: chapter,
-		Works:   worksList,
-		Refs:    refs,
+	var chapters []bookChapter
+	totalRefs := 0
+	for _, ch := range chapterOrder {
+		refs := chapterMap[ch]
+		chapters = append(chapters, bookChapter{Ch: ch, Refs: refs})
+		totalRefs += len(refs)
 	}
 
-	outPath := filepath.Join(staticDir, "bible", bookSlug, fmt.Sprintf("%d.json.zst", chapter))
+	payload := bookPayload{
+		Book:     book.Name,
+		Passages: passages,
+		Chapters: chapters,
+	}
+
+	outPath := filepath.Join(staticDir, "bible", fmt.Sprintf("%s.json.zst", bookSlug))
 	if err := writeZstJSON(outPath, payload); err != nil {
 		log.Printf("writing %s: %v", outPath, err)
 		return 0
 	}
-	return len(refs)
+	return totalRefs
 }
 
-// buildAll builds all chapter JSON.gz files in parallel using one goroutine per chapter,
+// buildAll builds all book JSON.zst files in parallel using one goroutine per book,
 // bounded by a semaphore of size runtime.NumCPU().
 func buildAll(db *sql.DB, cache map[string][]rune, onlyBook string) {
-	chapters := queryDistinctChapters(db, onlyBook)
+	slugs := queryDistinctBooks(db, onlyBook)
 
 	sem := make(chan struct{}, runtime.NumCPU())
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	totalRefs, totalFiles := 0, 0
 
-	for _, ck := range chapters {
+	for _, slug := range slugs {
 		wg.Add(1)
-		go func(slug string, ch int) {
+		go func(s string) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			n := buildChapter(db, cache, slug, ch)
+			n := buildBook(db, cache, s)
 
 			mu.Lock()
 			if n > 0 {
 				totalRefs += n
 				totalFiles++
-				fmt.Printf("  bible/%s/%d.json.zst  (%d refs)\n", slug, ch, n)
+				fmt.Printf("  bible/%s.json.zst  (%d refs)\n", s, n)
 			}
 			mu.Unlock()
-		}(ck.slug, ck.chapter)
+		}(slug)
 	}
 	wg.Wait()
-	fmt.Printf("\nBuilt %d chapter files, %d total references.\n", totalFiles, totalRefs)
+	fmt.Printf("\nBuilt %d book files, %d total references.\n", totalFiles, totalRefs)
 }
 
 // ── Works building ────────────────────────────────────────────────────────────
 
-// buildWorks writes one JSON.gz file per manuscript under data/static/manuscripts/.
+// buildWorks writes one JSON.zst file per manuscript under data/static/manuscripts/.
 func buildWorks(db *sql.DB, cache map[string][]rune) {
 	worksDir := filepath.Join(staticDir, "manuscripts")
 	if err := os.MkdirAll(worksDir, 0755); err != nil {
@@ -273,14 +280,14 @@ func buildWorks(db *sql.DB, cache map[string][]rune) {
 		BookSlug string  `json:"book_slug"`
 		Chapter  int     `json:"chapter"`
 		V        *string `json:"v"`
-		Text     string  `json:"text"`
+		P        int     `json:"p"` // index into passages array
 	}
 	type workPayload struct {
 		ID       int64     `json:"id"`
 		Author   string    `json:"author"`
 		Title    string    `json:"title"`
 		Year     *int      `json:"year"`
-		Filename string    `json:"filename"`
+		Passages []string  `json:"passages"`
 		Refs     []workRef `json:"refs"`
 	}
 
@@ -299,6 +306,10 @@ func buildWorks(db *sql.DB, cache map[string][]rune) {
 			continue
 		}
 
+		// Passage deduplication pool for this manuscript.
+		passIdx := make(map[passKey]int)
+		var passages []string
+
 		var refs []workRef
 		for refRows.Next() {
 			var book, bookSlug string
@@ -312,13 +323,20 @@ func buildWorks(db *sql.DB, cache map[string][]rune) {
 				continue
 			}
 
-			text := readPassage(cache, m.filename, passStart, passEnd)
+			k := passKey{m.filename, passStart, passEnd}
+			idx, found := passIdx[k]
+			if !found {
+				idx = len(passages)
+				passIdx[k] = idx
+				passages = append(passages, readPassage(cache, m.filename, passStart, passEnd))
+			}
+
 			refs = append(refs, workRef{
 				Book:     book,
 				BookSlug: bookSlug,
 				Chapter:  chapter,
 				V:        verseLabel(verseStart, verseEnd),
-				Text:     text,
+				P:        idx,
 			})
 		}
 		refRows.Close()
@@ -332,7 +350,7 @@ func buildWorks(db *sql.DB, cache map[string][]rune) {
 			Author:   nullStringOr(m.author, "Unknown"),
 			Title:    nullStringOr(m.title, m.filename),
 			Year:     nullInt64Ptr(m.year),
-			Filename: m.filename,
+			Passages: passages,
 			Refs:     refs,
 		}
 
@@ -342,7 +360,7 @@ func buildWorks(db *sql.DB, cache map[string][]rune) {
 			continue
 		}
 		totalFiles++
-		fmt.Printf("  manuscripts/%d.json.zst  (%d refs)\n", m.id, len(refs))
+		fmt.Printf("  manuscripts/%d.json.zst  (%d refs, %d unique passages)\n", m.id, len(refs), len(passages))
 	}
 	fmt.Printf("\nBuilt %d work files.\n", totalFiles)
 }

@@ -121,7 +121,7 @@ func writeZstJSON(path string, payload any) error {
 		return err
 	}
 	defer f.Close()
-	zw, err := zstd.NewWriter(f, zstd.WithEncoderLevel(zstd.SpeedFastest))
+	zw, err := zstd.NewWriter(f, zstd.WithEncoderLevel(zstd.SpeedBetterCompression))
 	if err != nil {
 		return err
 	}
@@ -143,9 +143,30 @@ func cleanupUncompressed() {
 		if strings.HasSuffix(path, ".json.gz") || (strings.HasSuffix(path, ".json") && !strings.HasSuffix(path, ".json.zst")) {
 			os.Remove(path)
 			removed++
+			return nil
+		}
+		// Remove old per-chapter bible files (bible/{slug}/{ch}.json.zst).
+		// New format is bible/{slug}.json.zst (flat, no subdirectory).
+		rel, err := filepath.Rel(filepath.Join(staticDir, "bible"), path)
+		if err == nil && !strings.HasPrefix(rel, "..") && strings.Count(rel, string(filepath.Separator)) == 1 && strings.HasSuffix(path, ".json.zst") {
+			os.Remove(path)
+			removed++
 		}
 		return nil
 	})
+	// Remove empty subdirectories left behind under bible/
+	bibleDir := filepath.Join(staticDir, "bible")
+	if entries, err := os.ReadDir(bibleDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				subdir := filepath.Join(bibleDir, e.Name())
+				if contents, err := os.ReadDir(subdir); err == nil && len(contents) == 0 {
+					os.Remove(subdir)
+					removed++
+				}
+			}
+		}
+	}
 	if removed > 0 {
 		fmt.Printf("Cleaned up %d old/uncompressed file(s).\n", removed)
 	}

@@ -15,6 +15,8 @@ const DATA_ROOT = "../data/static";
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let index = null;         // loaded from index.json.zst
+let worksById = new Map(); // manuscript id → work entry (from index)
+const bookCache = new Map(); // book slug → parsed book payload
 let activeBook = null;    // slug
 let activeChapter = null; // number
 let activeMode = "scripture";  // "scripture" | "works"
@@ -207,20 +209,29 @@ async function loadChapter(bookSlug, chapter) {
     ? `${bookInfo.name} ${chapter}`
     : `${bookSlug} ${chapter}`;
 
-  let data;
+  let bookData;
   try {
-    data = await fetchJSON(`${DATA_ROOT}/bible/${bookSlug}/${chapter}.json.zst`);
+    if (!bookCache.has(bookSlug)) {
+      bookCache.set(bookSlug, await fetchJSON(`${DATA_ROOT}/bible/${bookSlug}.json.zst`));
+    }
+    bookData = bookCache.get(bookSlug);
   } catch (err) {
-    refsListEl.innerHTML = `<p class="no-refs">Could not load chapter data. Have you run builder.py?</p>`;
+    refsListEl.innerHTML = `<p class="no-refs">Could not load chapter data. Have you run the builder?</p>`;
     return;
   }
 
-  renderChapter(data);
+  const chData = bookData.chapters.find(c => c.ch === chapter);
+  renderChapter(bookData, chData);
 }
 
-function renderChapter(data) {
-  // Populate author filter
-  const authors = [...new Set(data.works.map(w => w.author))].sort();
+function renderChapter(bookData, chData) {
+  if (!chData || !chData.refs.length) {
+    refsListEl.innerHTML = `<p class="no-refs">No references found for this chapter.</p>`;
+    return;
+  }
+
+  // Populate author filter from the refs in this chapter.
+  const authors = [...new Set(chData.refs.map(r => worksById.get(r.w)?.author ?? "Unknown"))].sort();
   authorFilter.innerHTML = `<option value="">All authors</option>`;
   for (const a of authors) {
     const opt = document.createElement("option");
@@ -231,13 +242,9 @@ function renderChapter(data) {
 
   refsListEl.innerHTML = "";
 
-  if (!data.refs.length) {
-    refsListEl.innerHTML = `<p class="no-refs">No references found for this chapter.</p>`;
-    return;
-  }
-
-  for (const ref of data.refs) {
-    const work = data.works[ref.w];
+  for (const ref of chData.refs) {
+    const work = worksById.get(ref.w);
+    if (!work) continue;
 
     const card = document.createElement("article");
     card.className = "ref-card";
@@ -258,7 +265,7 @@ function renderChapter(data) {
         </div>
         ${verseTag}
       </div>
-      <div class="ref-text">${esc(ref.text)}</div>
+      <div class="ref-text">${esc(bookData.passages[ref.p])}</div>
     `;
     refsListEl.appendChild(card);
   }
@@ -410,7 +417,7 @@ function renderWork(data) {
         </div>
         ${locTag}
       </div>
-      <div class="ref-text">${esc(ref.text)}</div>
+      <div class="ref-text">${esc(data.passages[ref.p])}</div>
     `;
     workRefsListEl.appendChild(card);
   }
@@ -447,6 +454,8 @@ async function init() {
     </p>`;
     return;
   }
+
+  for (const w of index.works) worksById.set(w.id, w);
 
   renderCategoryFilters();
   renderSidebar();
