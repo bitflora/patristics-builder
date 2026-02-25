@@ -764,19 +764,13 @@ const BOOK_GROUP_COLORS = new Map([
 
 async function renderBibleRefsByDate(cats) {
   const sec = makeVizSection('Bible References by Date');
-  const desc = document.createElement('p');
-  desc.className = 'viz-desc';
-  desc.textContent = 'Which parts of the Bible were cited at each period. Each dot is one work; vertical position shows the Bible section it referenced most. Dot size reflects citation count. Click to open.';
-  sec.appendChild(desc);
 
   const worksWithYear = index.works
     .filter(w => w.year != null && cats.has(w.category || 'Other'));
 
   if (!worksWithYear.length) {
-    const p = document.createElement('p');
-    p.className = 'no-refs';
-    p.textContent = 'No dated works in the selected categories.';
-    sec.appendChild(p);
+    sec.appendChild(Object.assign(document.createElement('p'),
+      { className: 'no-refs', textContent: 'No dated works in the selected categories.' }));
     return;
   }
 
@@ -798,16 +792,13 @@ async function renderBibleRefsByDate(cats) {
     })
   );
 
-  // Abort if the section was removed from the DOM while we were loading
-  // (happens when the user changes a category filter mid-load)
+  // Abort if this section was cleared from the DOM while loading
   if (!sec.isConnected) return;
   loadingEl.remove();
 
-  // Only show groups that actually appear in the data
   const activeGroups = BOOK_GROUP_ORDER.filter(g =>
     workRefsData.some(d => d.groupCounts.has(g))
   );
-
   if (!activeGroups.length) {
     sec.appendChild(Object.assign(document.createElement('p'),
       { className: 'no-refs', textContent: 'No data.' }));
@@ -816,74 +807,103 @@ async function renderBibleRefsByDate(cats) {
 
   const minYear  = Math.min(...worksWithYear.map(w => w.year));
   const maxYear  = Math.max(...worksWithYear.map(w => w.year));
-  const yearSpan = Math.max(maxYear - minYear, 1);
-  const maxCount = Math.max(...workRefsData.flatMap(d => [...d.groupCounts.values()]), 1);
+  const yearSpan = maxYear - minYear;
 
-  const SVG_W = 680, PAD_L = 112, PAD_R = 10, PAD_T = 12, PAD_B = 32;
+  // Pick a bucket size that gives roughly 6–10 columns
+  const BUCKET = yearSpan < 200 ? 25 : yearSpan < 500 ? 50 : yearSpan < 1000 ? 100 : yearSpan < 2000 ? 200 : 500;
+
+  // Add description now that we know the bucket size
+  const desc = document.createElement('p');
+  desc.className = 'viz-desc';
+  desc.textContent = `Proportional share of Bible citations going to each section of Scripture per ${BUCKET}-year period. Hover a segment for details.`;
+  sec.insertBefore(desc, sec.querySelector('.loading') || sec.firstChild.nextSibling);
+
+  // Build buckets
+  const firstBucket = Math.floor(minYear / BUCKET) * BUCKET;
+  const buckets = [];
+  for (let b = firstBucket; b <= maxYear; b += BUCKET) {
+    const wInBucket = workRefsData.filter(d => d.work.year >= b && d.work.year < b + BUCKET);
+    if (!wInBucket.length) continue;
+    const groupTotals = new Map();
+    let total = 0;
+    for (const { groupCounts } of wInBucket) {
+      for (const [g, n] of groupCounts) {
+        groupTotals.set(g, (groupTotals.get(g) || 0) + n);
+        total += n;
+      }
+    }
+    buckets.push({ b, label: String(b), worksCount: wInBucket.length, groupTotals, total });
+  }
+
+  if (!buckets.length) {
+    sec.appendChild(Object.assign(document.createElement('p'),
+      { className: 'no-refs', textContent: 'No data.' }));
+    return;
+  }
+
+  const SVG_W = 680;
+  const PAD_L = 32, PAD_R = 10, PAD_T = 10, PAD_B = 24;
   const PLOT_W = SVG_W - PAD_L - PAD_R;
-  const PLOT_H = Math.max(80, activeGroups.length * 42);
+  const PLOT_H = 220;
   const SVG_H  = PLOT_H + PAD_T + PAD_B;
-  const bandH  = PLOT_H / activeGroups.length;
 
-  const xOf = yr => PAD_L + ((yr - minYear) / yearSpan) * PLOT_W;
-  const rOf = n  => Math.max(3, Math.min(12, 3 + (n / maxCount) * 9));
-
-  const rawStep = yearSpan / 5;
-  const mag = Math.pow(10, Math.floor(Math.log10(rawStep)));
-  const tickStep = [1, 2, 5, 10].map(n => n * mag)
-    .find(s => yearSpan / s <= 8 && yearSpan / s >= 2) || mag * 10;
+  const N = buckets.length;
+  const BAR_SLOT = PLOT_W / N;
+  const BAR_GAP  = Math.max(1, Math.min(5, BAR_SLOT * 0.07));
+  const BAR_W    = BAR_SLOT - BAR_GAP;
 
   let s = [`<svg class="viz-svg" viewBox="0 0 ${SVG_W} ${SVG_H}">`];
 
-  // Alternating band backgrounds
-  for (let i = 0; i < activeGroups.length; i++) {
-    if (i % 2 === 0) continue;
-    const by = PAD_T + i * bandH;
-    s.push(`<rect x="0" y="${f(by)}" width="${SVG_W}" height="${f(bandH)}" fill="rgba(0,0,0,0.025)"/>`);
+  // Horizontal gridlines at 25 / 50 / 75 / 100 %
+  for (const pct of [25, 50, 75, 100]) {
+    const gy = f(PAD_T + PLOT_H * (1 - pct / 100));
+    s.push(`<line x1="${PAD_L}" y1="${gy}" x2="${SVG_W - PAD_R}" y2="${gy}" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="3,3"/>`);
+    s.push(`<text x="${PAD_L - 4}" y="${f(+gy + 3)}" text-anchor="end" font-size="8" font-family="Georgia,serif" fill="var(--muted)">${pct}%</text>`);
   }
 
-  // Group labels on left y-axis
-  for (let i = 0; i < activeGroups.length; i++) {
-    const gy = f(PAD_T + (i + 0.5) * bandH + 4);
-    const col = BOOK_GROUP_COLORS.get(activeGroups[i]) || '#7a5c38';
-    s.push(`<text x="${PAD_L - 6}" y="${gy}" text-anchor="end" font-size="10" font-family="Georgia,serif" fill="${col}">${esc(activeGroups[i])}</text>`);
-  }
+  // Stacked bars — OT sections at bottom, NT at top (canonical order)
+  for (let i = 0; i < N; i++) {
+    const bucket = buckets[i];
+    const barX   = f(PAD_L + i * BAR_SLOT + BAR_GAP / 2);
+    let yStack = 0; // cumulative height from bottom
 
-  // x-axis line
-  s.push(`<line x1="${PAD_L}" y1="${SVG_H - PAD_B}" x2="${SVG_W - PAD_R}" y2="${SVG_H - PAD_B}" stroke="var(--border)" stroke-width="1"/>`);
-
-  // Year ticks
-  const firstTick = Math.ceil(minYear / tickStep) * tickStep;
-  for (let yr = firstTick; yr <= maxYear; yr += tickStep) {
-    const tx = xOf(yr);
-    s.push(`<line x1="${f(tx)}" y1="${SVG_H - PAD_B}" x2="${f(tx)}" y2="${SVG_H - PAD_B + 4}" stroke="var(--muted)" stroke-width="1"/>`);
-    s.push(`<text x="${f(tx)}" y="${SVG_H - PAD_B + 14}" class="viz-axis-label" text-anchor="middle">${yr}</text>`);
-  }
-
-  // One dot per (work × group) pair
-  for (const { work, groupCounts } of workRefsData) {
-    const x = xOf(work.year);
-    for (const [group, count] of groupCounts) {
-      const gi = activeGroups.indexOf(group);
-      if (gi === -1) continue;
-      const y   = PAD_T + (gi + 0.5) * bandH;
-      const r   = rOf(count);
-      const col = BOOK_GROUP_COLORS.get(group) || '#7a5c38';
-      const tip = `${work.author} — ${work.title} (${work.year})\n${group}: ${count} refs`;
-      s.push(`<circle cx="${f(x)}" cy="${f(y)}" r="${r}" fill="${col}" opacity="0.70" stroke="rgba(255,255,255,0.4)" stroke-width="0.5" data-work-id="${work.id}" style="cursor:pointer"><title>${esc(tip)}</title></circle>`);
+    for (const g of activeGroups) {
+      const count = bucket.groupTotals.get(g) || 0;
+      if (!count) continue;
+      const proportion = count / bucket.total;
+      const segH = proportion * PLOT_H;
+      const segY = f(PAD_T + PLOT_H - yStack - segH);
+      const col  = BOOK_GROUP_COLORS.get(g) || '#888';
+      const pct  = Math.round(proportion * 100);
+      s.push(`<rect x="${barX}" y="${segY}" width="${f(BAR_W)}" height="${f(segH)}" fill="${col}"><title>${g}: ${pct}% · ${count} refs (${bucket.worksCount} work${bucket.worksCount !== 1 ? 's' : ''})</title></rect>`);
+      yStack += segH;
     }
+
+    // Year label below bar
+    const lx = f(PAD_L + i * BAR_SLOT + BAR_SLOT / 2);
+    s.push(`<text x="${lx}" y="${f(PAD_T + PLOT_H + 14)}" text-anchor="middle" font-size="9" font-family="Georgia,serif" fill="var(--muted)">${bucket.label}</text>`);
   }
+
+  // Baseline
+  s.push(`<line x1="${PAD_L}" y1="${f(PAD_T + PLOT_H)}" x2="${SVG_W - PAD_R}" y2="${f(PAD_T + PLOT_H)}" stroke="var(--border)" stroke-width="1"/>`);
 
   s.push('</svg>');
 
   const wrap = document.createElement('div');
   wrap.className = 'viz-chart-wrap';
   wrap.innerHTML = s.join('');
-  wrap.querySelector('svg').addEventListener('click', e => {
-    const dot = e.target.closest('circle[data-work-id]');
-    if (dot) navigateToWork(parseInt(dot.getAttribute('data-work-id'), 10));
-  });
   sec.appendChild(wrap);
+
+  // Legend in canonical top-to-bottom order
+  const legend = document.createElement('div');
+  legend.className = 'viz-legend';
+  for (const g of activeGroups) {
+    const item = document.createElement('span');
+    item.className = 'viz-legend-item';
+    item.innerHTML = `<span class="viz-legend-swatch" style="background:${BOOK_GROUP_COLORS.get(g) || '#888'}"></span>${esc(g)}`;
+    legend.appendChild(item);
+  }
+  sec.appendChild(legend);
 }
 
 // ── 5. Category Donut ─────────────────────────────────────────────────────────
