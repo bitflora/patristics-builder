@@ -2,6 +2,10 @@
   Content-Type: application/json
   Content-Encoding: gzip
 
-/data/static/*/*.json.gz
+/data/static/manuscripts/*.json.gz
+  Content-Type: application/json
+  Content-Encoding: gzip
+
+/data/static/bible/*/*.json.gz
   Content-Type: application/json
   Content-Encoding: gzip

@@ -3,8 +3,8 @@
  *
  * Expects data files at:
  *   ../data/static/index.json.gz
- *   ../data/static/{book-slug}/{chapter}.json.gz
- *   ../data/static/works/{id}.json.gz
+ *   ../data/static/bible/{book-slug}/{chapter}.json.gz
+ *   ../data/static/manuscripts/{id}.json.gz
  *
  * To serve locally:
  *   python -m http.server 8000 --directory .   (from project root)
@@ -187,7 +187,7 @@ async function loadChapter(bookSlug, chapter) {
 
   let data;
   try {
-    data = await fetchJSON(`${DATA_ROOT}/${bookSlug}/${chapter}.json.gz`);
+    data = await fetchJSON(`${DATA_ROOT}/bible/${bookSlug}/${chapter}.json.gz`);
   } catch (err) {
     refsListEl.innerHTML = `<p class="no-refs">Could not load chapter data. Have you run builder.py?</p>`;
     return;
@@ -294,7 +294,7 @@ async function loadWork(workId) {
 
   let data;
   try {
-    data = await fetchJSON(`${DATA_ROOT}/works/${workId}.json.gz`);
+    data = await fetchJSON(`${DATA_ROOT}/manuscripts/${workId}.json.gz`);
   } catch (err) {
     workRefsListEl.innerHTML = `<p class="no-refs">Could not load work data. Have you run builder.py?</p>`;
     return;

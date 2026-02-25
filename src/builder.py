@@ -3,9 +3,9 @@ JSON builder: reads the SQLite database and generates static JSON files
 for the viewer.
 
 Outputs:
-  data/static/index.json.gz              — book list with per-chapter ref counts
-  data/static/{book-slug}/{ch}.json.gz   — all references for a chapter
-  data/static/works/{id}.json.gz         — all references from a single work
+  data/static/index.json.gz                      — book list with per-chapter ref counts
+  data/static/bible/{book-slug}/{ch}.json.gz     — all references for a chapter
+  data/static/manuscripts/{id}.json.gz           — all references from a single work
 
 Usage:
   python src/builder.py               # build everything
@@ -214,19 +214,19 @@ def build_all(conn, only_book: str | None = None) -> None:
         if only_book and slug != only_book:
             continue
         ch = row["chapter"]
-        out_dir = STATIC_DIR / slug
+        out_dir = STATIC_DIR / "bible" / slug
         n = build_chapter(conn, slug, ch, out_dir)
         if n:
             total_refs += n
             total_files += 1
-            print(f"  {slug}/{ch}.json.gz  ({n} refs)")
+            print(f"  bible/{slug}/{ch}.json.gz  ({n} refs)")
 
     print(f"\nBuilt {total_files} chapter files, {total_refs} total references.")
 
 
 def build_works(conn) -> None:
-    """Build per-work JSON files in data/static/works/{id}.json.gz"""
-    works_dir = STATIC_DIR / "works"
+    """Build per-work JSON files in data/static/manuscripts/{id}.json.gz"""
+    works_dir = STATIC_DIR / "manuscripts"
     works_dir.mkdir(parents=True, exist_ok=True)
 
     manuscripts = conn.execute(
@@ -285,7 +285,7 @@ def build_works(conn) -> None:
             f.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
 
         total_files += 1
-        print(f"  works/{m['id']}.json.gz  ({len(refs)} refs)")
+        print(f"  manuscripts/{m['id']}.json.gz  ({len(refs)} refs)")
 
     print(f"\nBuilt {total_files} work files.")
 
