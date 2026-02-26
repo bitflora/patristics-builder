@@ -1,0 +1,11 @@
+{
+  "headers": [
+    {
+      "source": "/data/static/(.*)\\.zst",
+      "headers": [
+        { "key": "Content-Encoding", "value": "zstd" },
+        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }
+      ]
+    }
+  ]
+}
