@@ -247,18 +247,11 @@ function primaryVerseKey(v) {
 }
 
 async function showVerseView(bookSlug, chapter) {
-  activeMode = "scripture";
-  for (const tab of modeTabEls) tab.classList.toggle("active", tab.dataset.mode === "scripture");
-
   activeBook    = bookSlug;
   activeChapter = chapter;
   activeVerse   = null;
+  setMode('scripture');
   renderSidebar(searchEl.value);
-
-  welcomeEl.hidden     = true;
-  verseViewEl.hidden   = false;
-  chapterViewEl.hidden = true;
-  workViewEl.hidden    = true;
 
   const bookInfo = index.books.find(b => b.slug === bookSlug);
   verseTitleEl.textContent = bookInfo ? `${bookInfo.name} ${chapter}` : `${bookSlug} ${chapter}`;
@@ -427,18 +420,12 @@ function loadChapterFiltered(bookData, chData, verseKey, kjvChapter) {
 
 // ── Chapter loading ───────────────────────────────────────────────────────────
 async function loadChapter(bookSlug, chapter) {
-  activeMode = "scripture";
-  for (const tab of modeTabEls) tab.classList.toggle("active", tab.dataset.mode === "scripture");
-
   activeBook    = bookSlug;
   activeChapter = chapter;
   activeVerse   = "all"; // special value: not null (verse table) but not a specific verse
+  setMode('scripture');
   renderSidebar(searchEl.value);
 
-  welcomeEl.hidden     = true;
-  verseViewEl.hidden   = true;
-  chapterViewEl.hidden = false;
-  workViewEl.hidden    = true;
   verseBannerEl.hidden = true;
   refsListEl.innerHTML = `<p class="loading">Loading…</p>`;
 
