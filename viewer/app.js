@@ -405,12 +405,15 @@ function loadChapterFiltered(bookData, chData, verseKey, kjvChapter) {
       : `<span class="ref-verse-tag">whole chapter</span>`;
 
     const yearStr = work.year ? ` (${work.year})` : "";
+    const ccelLink = work.ccel_url
+      ? ` <a href="${esc(work.ccel_url)}" target="_blank" rel="noopener" class="ccel-link">View on CCEL ↗</a>`
+      : "";
 
     card.innerHTML = `
       <div class="ref-meta">
         <div>
           <span class="ref-author">${esc(work.author)}</span>
-          <span class="ref-work"> — ${esc(work.title)}${esc(yearStr)}</span>
+          <span class="ref-work"> — ${esc(work.title)}${esc(yearStr)}</span>${ccelLink}
         </div>
         ${verseTag}
       </div>
@@ -491,12 +494,15 @@ function renderChapter(bookData, chData) {
       : `<span class="ref-verse-tag">whole chapter</span>`;
 
     const yearStr = work.year ? ` (${work.year})` : "";
+    const ccelLink = work.ccel_url
+      ? ` <a href="${esc(work.ccel_url)}" target="_blank" rel="noopener" class="ccel-link">View on CCEL ↗</a>`
+      : "";
 
     card.innerHTML = `
       <div class="ref-meta">
         <div>
           <span class="ref-author">${esc(work.author)}</span>
-          <span class="ref-work"> — ${esc(work.title)}${esc(yearStr)}</span>
+          <span class="ref-work"> — ${esc(work.title)}${esc(yearStr)}</span>${ccelLink}
         </div>
         ${verseTag}
       </div>
@@ -632,7 +638,11 @@ async function loadWork(workId) {
 
 function renderWork(data) {
   workTitleEl.textContent = data.title;
-  workMetaEl.textContent = `${data.author}${data.year ? ` (${data.year})` : ""}`;
+  const yearPart = data.year ? ` (${data.year})` : "";
+  const linkPart = data.ccel_url
+    ? ` <a href="${esc(data.ccel_url)}" target="_blank" rel="noopener" class="ccel-link">View on CCEL ↗</a>`
+    : "";
+  workMetaEl.innerHTML = `${esc(data.author)}${esc(yearPart)}${linkPart}`;
 
   // Book filter dropdown (books in the order they appear in refs)
   const seenBooks = [];

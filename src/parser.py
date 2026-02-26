@@ -30,7 +30,7 @@ MANUSCRIPTS_DIR = Path(__file__).parent.parent / "manuscripts"
 # Entries here override any metadata extracted from the file header.
 # Add entries for files whose header metadata is absent or inaccurate.
 METADATA: dict[str, tuple] = {
-    "mort.txt":        ("John Owen",        "Of the Mortification of Sin in Believers", 1656, None),
+    "mort.txt":        ("John Owen",        "Of the Mortification of Sin in Believers", 1656, "https://ccel.org/ccel/owen/mort"),
     "government.txt":  ("Richard Allestree","The Government of the Tongue",             1674, None),
     "sermons.txt":     ("Meister Eckhart",  "Sermons",                                  1300, None),
     "warrant3.txt":    ("Alvin Plantinga",  "Warranted Christian Belief",               2000, None),
@@ -422,7 +422,15 @@ def parse_file(
         author, title, year, ccel_url = METADATA[filename]
     else:
         author, title, year = _parse_ccel_header(text)
-        ccel_url = None
+        if author:  # has a CCEL header → derive URL from filename
+            stem = path.stem  # e.g. "augustine_confess"
+            last_us = stem.rfind('_')
+            ccel_url = (
+                f"https://ccel.org/ccel/{stem[:last_us]}/{stem[last_us+1:]}"
+                if last_us != -1 else None
+            )
+        else:
+            ccel_url = None
 
     print(f"\nParsing: {filename}")
     if author:

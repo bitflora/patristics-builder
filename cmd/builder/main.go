@@ -190,3 +190,11 @@ func nullInt64Ptr(n sql.NullInt64) *int {
 	v := int(n.Int64)
 	return &v
 }
+
+// nullStringPtr returns a pointer to the string value, or nil if the value is NULL.
+func nullStringPtr(s sql.NullString) *string {
+	if !s.Valid {
+		return nil
+	}
+	return &s.String
+}

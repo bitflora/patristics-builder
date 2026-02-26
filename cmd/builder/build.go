@@ -252,7 +252,7 @@ func buildWorks(db *sql.DB, cache map[string][]rune) {
 	}
 
 	mRows, err := db.Query(
-		"SELECT id, author, title, year, filename FROM manuscripts ORDER BY id",
+		"SELECT id, author, title, year, filename, ccel_url FROM manuscripts ORDER BY id",
 	)
 	if err != nil {
 		log.Fatalf("querying manuscripts: %v", err)
@@ -264,11 +264,12 @@ func buildWorks(db *sql.DB, cache map[string][]rune) {
 		title    sql.NullString
 		year     sql.NullInt64
 		filename string
+		ccelURL  sql.NullString
 	}
 	var manuscripts []mRow
 	for mRows.Next() {
 		var m mRow
-		if err := mRows.Scan(&m.id, &m.author, &m.title, &m.year, &m.filename); err != nil {
+		if err := mRows.Scan(&m.id, &m.author, &m.title, &m.year, &m.filename, &m.ccelURL); err != nil {
 			log.Fatalf("scanning manuscript row: %v", err)
 		}
 		manuscripts = append(manuscripts, m)
@@ -287,6 +288,7 @@ func buildWorks(db *sql.DB, cache map[string][]rune) {
 		Author   string    `json:"author"`
 		Title    string    `json:"title"`
 		Year     *int      `json:"year"`
+		CcelURL  *string   `json:"ccel_url,omitempty"`
 		Passages []string  `json:"passages"`
 		Refs     []workRef `json:"refs"`
 	}
@@ -350,6 +352,7 @@ func buildWorks(db *sql.DB, cache map[string][]rune) {
 			Author:   nullStringOr(m.author, "Unknown"),
 			Title:    nullStringOr(m.title, m.filename),
 			Year:     nullInt64Ptr(m.year),
+			CcelURL:  nullStringPtr(m.ccelURL),
 			Passages: passages,
 			Refs:     refs,
 		}
@@ -404,7 +407,7 @@ func buildIndex(db *sql.DB, onlyBook string) {
 
 	// Global works list with total ref counts
 	wRows, err := db.Query(`
-		SELECT m.id, m.author, m.title, m.year, m.filename, m.category,
+		SELECT m.id, m.author, m.title, m.year, m.filename, m.category, m.ccel_url,
 		       COUNT(vr.id) AS ref_count
 		FROM manuscripts m
 		LEFT JOIN verse_refs vr ON vr.manuscript_id = m.id
@@ -415,21 +418,22 @@ func buildIndex(db *sql.DB, onlyBook string) {
 		log.Fatalf("querying global works: %v", err)
 	}
 	type globalWork struct {
-		ID       int64  `json:"id"`
-		Author   string `json:"author"`
-		Title    string `json:"title"`
-		Year     *int   `json:"year"`
-		RefCount int    `json:"ref_count"`
-		Category string `json:"category"`
+		ID       int64   `json:"id"`
+		Author   string  `json:"author"`
+		Title    string  `json:"title"`
+		Year     *int    `json:"year"`
+		CcelURL  *string `json:"ccel_url,omitempty"`
+		RefCount int     `json:"ref_count"`
+		Category string  `json:"category"`
 	}
 	var globalWorks []globalWork
 	for wRows.Next() {
 		var id int64
-		var author, title, category sql.NullString
+		var author, title, category, ccelURL sql.NullString
 		var year sql.NullInt64
 		var filename string
 		var refCount int
-		if err := wRows.Scan(&id, &author, &title, &year, &filename, &category, &refCount); err != nil {
+		if err := wRows.Scan(&id, &author, &title, &year, &filename, &category, &ccelURL, &refCount); err != nil {
 			log.Fatalf("scanning global work: %v", err)
 		}
 		globalWorks = append(globalWorks, globalWork{
@@ -437,6 +441,7 @@ func buildIndex(db *sql.DB, onlyBook string) {
 			Author:   nullStringOr(author, "Unknown"),
 			Title:    nullStringOr(title, filename),
 			Year:     nullInt64Ptr(year),
+			CcelURL:  nullStringPtr(ccelURL),
 			RefCount: refCount,
 			Category: nullStringOr(category, "Other"),
 		})
