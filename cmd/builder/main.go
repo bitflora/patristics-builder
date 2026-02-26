@@ -6,13 +6,13 @@ for the viewer. Run from the repository root:
 
 	go run ./cmd/builder               # build everything
 	go run ./cmd/builder --book romans # build only one book
-	go run ./cmd/builder --clean       # delete data/static/ before building
+	go run ./cmd/builder --clean       # delete viewer/data/static/ before building
 
 Outputs:
 
-	data/static/index.json.zst                      — book list with per-chapter ref counts
-	data/static/bible/{book-slug}/{ch}.json.zst     — all references for a chapter
-	data/static/manuscripts/{id}.json.zst           — all references from a single work
+	viewer/data/static/index.json.zst                      — book list with per-chapter ref counts
+	viewer/data/static/bible/{book-slug}/{ch}.json.zst     — all references for a chapter
+	viewer/data/static/manuscripts/{id}.json.zst           — all references from a single work
 */
 package main
 
@@ -37,7 +37,7 @@ const maxPassageChars = 8000
 var (
 	repoRoot       = mustCwd()
 	manuscriptsDir = filepath.Join(repoRoot, "manuscripts")
-	staticDir      = filepath.Join(repoRoot, "data", "static")
+	staticDir      = filepath.Join(repoRoot, "viewer", "data", "static")
 	dbPath         = filepath.Join(repoRoot, "data", "patristics.db")
 )
 

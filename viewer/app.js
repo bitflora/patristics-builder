@@ -2,16 +2,16 @@
  * Patristics Viewer — static SPA
  *
  * Expects data files at:
- *   ../data/static/index.json.zst
- *   ../data/static/bible/{book-slug}/{chapter}.json.zst
- *   ../data/static/manuscripts/{id}.json.zst
+ *   viewer/data/static/index.json.zst
+ *   viewer/data/static/bible/{book-slug}/{chapter}.json.zst
+ *   viewer/data/static/manuscripts/{id}.json.zst
  *
  * To serve locally:
  *   python -m http.server 8000 --directory .   (from project root)
  *   then open http://localhost:8000/viewer/
  */
 
-const DATA_ROOT = "../data/static";
+const DATA_ROOT = "data/static";
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let index = null;         // loaded from index.json.zst
