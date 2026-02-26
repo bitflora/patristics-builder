@@ -19,16 +19,25 @@ let worksById = new Map(); // manuscript id → work entry (from index)
 const bookCache = new Map(); // book slug → parsed book payload
 let activeBook = null;    // slug
 let activeChapter = null; // number
+let activeVerse = null;   // null = on verse table; "13" / "whole" = filtered citations view
 let activeMode = "viz";  // "scripture" | "works" | "viz"
 let activeWorkId = null;       // numeric manuscript id
+let kjvData = null;       // loaded lazily from kjv.json.zst
+let kjvLoadPromise = null;
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const bookListEl       = document.getElementById("book-list");
 const searchEl         = document.getElementById("search");
 const welcomeEl        = document.getElementById("welcome");
 const statsEl          = document.getElementById("stats");
+const verseViewEl      = document.getElementById("verse-view");
+const verseTitleEl     = document.getElementById("verse-view-title");
+const verseTbodyEl     = document.getElementById("verse-tbody");
 const chapterViewEl    = document.getElementById("chapter-view");
 const chapterTitle     = document.getElementById("chapter-title");
+const verseBannerEl    = document.getElementById("verse-banner");
+const verseBannerRefEl = document.getElementById("verse-banner-ref");
+const verseBannerTextEl = document.getElementById("verse-banner-text");
 const refsListEl       = document.getElementById("refs-list");
 const authorFilter     = document.getElementById("author-filter");
 // Works mode DOM refs
@@ -97,19 +106,29 @@ function setMode(mode) {
   vizViewEl.hidden        = !isViz;
 
   if (isViz) {
-    welcomeEl.hidden    = true;
+    welcomeEl.hidden     = true;
+    verseViewEl.hidden   = true;
     chapterViewEl.hidden = true;
-    workViewEl.hidden   = true;
+    workViewEl.hidden    = true;
     renderVizTab();
   } else if (isScripture) {
     workViewEl.hidden = true;
     if (activeChapter !== null) {
-      welcomeEl.hidden    = true;
-      chapterViewEl.hidden = false;
+      welcomeEl.hidden = true;
+      // Show verse table or filtered citations depending on state
+      if (activeVerse === null) {
+        verseViewEl.hidden   = false;
+        chapterViewEl.hidden = true;
+      } else {
+        verseViewEl.hidden   = true;
+        chapterViewEl.hidden = false;
+      }
     } else {
+      verseViewEl.hidden = true;
       showWelcome();
     }
   } else {
+    verseViewEl.hidden   = true;
     chapterViewEl.hidden = true;
     if (activeWorkId !== null) {
       welcomeEl.hidden  = true;
@@ -168,7 +187,7 @@ function renderSidebar(filter = "") {
       dot.setAttribute("role", "listitem");
       dot.addEventListener("click", (e) => {
         e.stopPropagation();
-        loadChapter(book.slug, ch.ch);
+        showVerseView(book.slug, ch.ch);
       });
       row.appendChild(dot);
     }
@@ -182,19 +201,22 @@ function toggleBook(slug) {
     // Collapse
     activeBook = null;
     activeChapter = null;
+    activeVerse = null;
     showWelcome();
   } else {
     activeBook = slug;
     activeChapter = null;
+    activeVerse = null;
   }
   renderSidebar(searchEl.value);
 }
 
 // ── Welcome / stats ───────────────────────────────────────────────────────────
 function showWelcome() {
-  welcomeEl.hidden = false;
+  welcomeEl.hidden     = false;
+  verseViewEl.hidden   = true;
   chapterViewEl.hidden = true;
-  workViewEl.hidden = true;
+  workViewEl.hidden    = true;
   if (!index) return;
   const totalBooks = index.books.length;
   const totalRefs  = index.books.reduce((s, b) => s + b.chapters.reduce((s2, c) => s2 + c.count, 0), 0);
@@ -203,18 +225,218 @@ function showWelcome() {
     `${totalRefs.toLocaleString()} references across ${totalBooks} books, from ${totalWorks} works.`;
 }
 
+// ── KJV text loading ──────────────────────────────────────────────────────────
+async function loadKJV() {
+  if (kjvData) return kjvData;
+  if (!kjvLoadPromise) {
+    kjvLoadPromise = fetchJSON(`${DATA_ROOT}/kjv.json.zst`).then(d => { kjvData = d; return d; });
+  }
+  return kjvLoadPromise;
+}
+
+// ── Verse selection view ──────────────────────────────────────────────────────
+
+// Return the primary verse key for a ref.v value:
+//   null      → "whole"
+//   "13"      → "13"
+//   "13-17"   → "13"  (first verse of range)
+function primaryVerseKey(v) {
+  if (v === null) return "whole";
+  const m = v.match(/^(\d+)/);
+  return m ? m[1] : v;
+}
+
+async function showVerseView(bookSlug, chapter) {
+  activeMode = "scripture";
+  for (const tab of modeTabEls) tab.classList.toggle("active", tab.dataset.mode === "scripture");
+
+  activeBook    = bookSlug;
+  activeChapter = chapter;
+  activeVerse   = null;
+  renderSidebar(searchEl.value);
+
+  welcomeEl.hidden     = true;
+  verseViewEl.hidden   = false;
+  chapterViewEl.hidden = true;
+  workViewEl.hidden    = true;
+
+  const bookInfo = index.books.find(b => b.slug === bookSlug);
+  verseTitleEl.textContent = bookInfo ? `${bookInfo.name} ${chapter}` : `${bookSlug} ${chapter}`;
+  verseTbodyEl.innerHTML = `<tr><td colspan="3" class="loading" style="padding:.75rem">Loading…</td></tr>`;
+
+  let bookData, kjv;
+  try {
+    [bookData, kjv] = await Promise.all([
+      bookCache.has(bookSlug)
+        ? Promise.resolve(bookCache.get(bookSlug))
+        : fetchJSON(`${DATA_ROOT}/bible/${bookSlug}.json.zst`).then(d => { bookCache.set(bookSlug, d); return d; }),
+      loadKJV(),
+    ]);
+  } catch (err) {
+    verseTbodyEl.innerHTML = `<tr><td colspan="3" class="no-refs">Could not load chapter data.</td></tr>`;
+    return;
+  }
+
+  const chData = bookData.chapters.find(c => c.ch === chapter);
+  const kjvChapter = kjv?.[bookSlug]?.[String(chapter)] ?? null;
+  renderVerseTable(bookData, chData, kjvChapter);
+}
+
+function renderVerseTable(bookData, chData, kjvChapter) {
+  verseTbodyEl.innerHTML = "";
+
+  if (!chData || !chData.refs.length) {
+    verseTbodyEl.innerHTML = `<tr><td colspan="3" class="no-refs">No references found for this chapter.</td></tr>`;
+    return;
+  }
+
+  const cats = checkedCategories();
+
+  // Group refs by primary verse key, respecting active category filters
+  const groups = new Map(); // key → refs[]
+  for (const ref of chData.refs) {
+    const work = worksById.get(ref.w);
+    if (!work) continue;
+    if (!cats.has(work.category || "Other")) continue;
+    const key = primaryVerseKey(ref.v);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(ref);
+  }
+
+  if (!groups.size) {
+    verseTbodyEl.innerHTML = `<tr><td colspan="3" class="no-refs">No references for selected categories.</td></tr>`;
+    return;
+  }
+
+  const maxCount = Math.max(...[...groups.values()].map(r => r.length));
+
+  // Always put "whole" row first, then numeric verses in order
+  const orderedKeys = [];
+  if (groups.has("whole")) orderedKeys.push("whole");
+  const numericKeys = [...groups.keys()]
+    .filter(k => k !== "whole")
+    .sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+  orderedKeys.push(...numericKeys);
+
+  for (const key of orderedKeys) {
+    const refs = groups.get(key);
+    const count = refs.length;
+    const heat = heatLevel(count, maxCount);
+
+    const tr = document.createElement("tr");
+    tr.className = "verse-row";
+    tr.dataset.heat = heat;
+    tr.setAttribute("role", "button");
+    tr.setAttribute("tabindex", "0");
+
+    let verseLabel, verseText;
+    if (key === "whole") {
+      verseLabel = "Whole chapter";
+      verseText  = "";
+    } else {
+      verseLabel = `v.\u00a0${key}`;
+      const raw = kjvChapter?.[key] ?? "";
+      verseText  = raw.length > 140 ? raw.slice(0, 137) + "…" : raw;
+    }
+
+    tr.innerHTML = `
+      <td class="verse-num-cell">${esc(verseLabel)}</td>
+      <td class="verse-text-cell">${esc(verseText)}</td>
+      <td class="verse-count-cell">${count}</td>
+    `;
+
+    tr.addEventListener("click", () => loadChapterFiltered(bookData, chData, key, kjvChapter));
+    tr.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") loadChapterFiltered(bookData, chData, key, kjvChapter); });
+
+    verseTbodyEl.appendChild(tr);
+  }
+}
+
+function loadChapterFiltered(bookData, chData, verseKey, kjvChapter) {
+  activeVerse = verseKey;
+
+  verseViewEl.hidden   = true;
+  chapterViewEl.hidden = false;
+
+  // Update chapter title to include verse
+  const bookInfo = index.books.find(b => b.slug === activeBook);
+  const bookName = bookInfo ? bookInfo.name : activeBook;
+  if (verseKey === "whole") {
+    chapterTitle.textContent = `${bookName} ${activeChapter} — whole chapter`;
+  } else {
+    chapterTitle.textContent = `${bookName} ${activeChapter}:${verseKey}`;
+  }
+
+  // Show verse banner with KJV text
+  if (verseKey !== "whole" && kjvChapter?.[verseKey]) {
+    verseBannerRefEl.textContent = `${bookName} ${activeChapter}:${verseKey} (KJV)`;
+    verseBannerTextEl.textContent = kjvChapter[verseKey];
+    verseBannerEl.hidden = false;
+  } else {
+    verseBannerEl.hidden = true;
+  }
+
+  // Filter refs to only those matching verseKey
+  const filteredRefs = chData.refs.filter(ref => primaryVerseKey(ref.v) === verseKey);
+
+  // Populate author filter
+  const authors = [...new Set(filteredRefs.map(r => worksById.get(r.w)?.author ?? "Unknown"))].sort();
+  authorFilter.innerHTML = `<option value="">All authors</option>`;
+  for (const a of authors) {
+    const opt = document.createElement("option");
+    opt.value = a;
+    opt.textContent = a;
+    authorFilter.appendChild(opt);
+  }
+
+  refsListEl.innerHTML = "";
+
+  for (const ref of filteredRefs) {
+    const work = worksById.get(ref.w);
+    if (!work) continue;
+
+    const card = document.createElement("article");
+    card.className = "ref-card";
+    card.dataset.author   = work.author;
+    card.dataset.category = work.category || "Other";
+
+    const verseTag = ref.v
+      ? `<span class="ref-verse-tag">v.\u00a0${esc(ref.v)}</span>`
+      : `<span class="ref-verse-tag">whole chapter</span>`;
+
+    const yearStr = work.year ? ` (${work.year})` : "";
+
+    card.innerHTML = `
+      <div class="ref-meta">
+        <div>
+          <span class="ref-author">${esc(work.author)}</span>
+          <span class="ref-work"> — ${esc(work.title)}${esc(yearStr)}</span>
+        </div>
+        ${verseTag}
+      </div>
+      <div class="ref-text">${esc(bookData.passages[ref.p])}</div>
+    `;
+    refsListEl.appendChild(card);
+  }
+
+  applyCombinedFilter();
+}
+
 // ── Chapter loading ───────────────────────────────────────────────────────────
 async function loadChapter(bookSlug, chapter) {
   activeMode = "scripture";
   for (const tab of modeTabEls) tab.classList.toggle("active", tab.dataset.mode === "scripture");
 
-  activeBook = bookSlug;
+  activeBook    = bookSlug;
   activeChapter = chapter;
+  activeVerse   = "all"; // special value: not null (verse table) but not a specific verse
   renderSidebar(searchEl.value);
 
-  welcomeEl.hidden = true;
+  welcomeEl.hidden     = true;
+  verseViewEl.hidden   = true;
   chapterViewEl.hidden = false;
-  workViewEl.hidden = true;
+  workViewEl.hidden    = true;
+  verseBannerEl.hidden = true;
   refsListEl.innerHTML = `<p class="loading">Loading…</p>`;
 
   const bookInfo = index.books.find(b => b.slug === bookSlug);
@@ -301,6 +523,12 @@ function applyAuthorFilter() { applyCombinedFilter(); }
 
 authorFilter.addEventListener("change", applyCombinedFilter);
 
+document.getElementById("back-to-verses").addEventListener("click", () => {
+  if (activeBook !== null && activeChapter !== null) {
+    showVerseView(activeBook, activeChapter);
+  }
+});
+
 // ── Category filters ──────────────────────────────────────────────────────────
 function renderCategoryFilters() {
   const categories = [...new Set(index.works.map(w => w.category || "Other"))].sort();
@@ -329,7 +557,19 @@ function checkedCategories() {
 // Re-render all views whenever the category filter changes.
 function applyFilters() {
   renderSidebar(searchEl.value);
-  if (activeChapter !== null) applyCombinedFilter();
+  if (activeChapter !== null) {
+    if (activeVerse === null) {
+      // Re-render verse table with updated category counts
+      const bookData = bookCache.get(activeBook);
+      if (bookData) {
+        const chData = bookData.chapters.find(c => c.ch === activeChapter);
+        const kjvChapter = kjvData?.[activeBook]?.[String(activeChapter)] ?? null;
+        renderVerseTable(bookData, chData, kjvChapter);
+      }
+    } else {
+      applyCombinedFilter();
+    }
+  }
   renderWorksList(worksSearchEl.value);
   if (activeMode === "viz") renderVizTab();
 }

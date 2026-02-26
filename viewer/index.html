@@ -49,13 +49,37 @@
            then click a chapter to read the passages.</p>
         <div id="stats"></div>
       </div>
+      <div id="verse-view" hidden>
+        <div id="verse-header">
+          <h2 id="verse-view-title"></h2>
+        </div>
+        <div id="verse-table-wrap">
+          <table id="verse-table">
+            <thead>
+              <tr>
+                <th>Verse</th>
+                <th>Text</th>
+                <th>Citations</th>
+              </tr>
+            </thead>
+            <tbody id="verse-tbody"></tbody>
+          </table>
+        </div>
+      </div>
       <div id="chapter-view" hidden>
         <div id="chapter-header">
-          <h2 id="chapter-title"></h2>
+          <div id="chapter-title-row">
+            <button class="back-link" id="back-to-verses">← All verses</button>
+            <h2 id="chapter-title"></h2>
+          </div>
           <div id="filter-bar">
             <label for="author-filter">Filter by author:</label>
             <select id="author-filter"><option value="">All authors</option></select>
           </div>
+        </div>
+        <div id="verse-banner" hidden>
+          <span id="verse-banner-ref"></span>
+          <p id="verse-banner-text"></p>
         </div>
         <div id="refs-list"></div>
       </div>
