@@ -1,4 +1,2 @@
 - links to the original works
-- drill down to verse rather than chapter.
-- display the actual bible verse
 - highlight the referenced verse in the text
