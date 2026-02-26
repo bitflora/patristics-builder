@@ -1,2 +1,1 @@
 - links to the original works
-- highlight the referenced verse in the text

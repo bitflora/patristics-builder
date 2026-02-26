@@ -414,7 +414,7 @@ function loadChapterFiltered(bookData, chData, verseKey, kjvChapter) {
         </div>
         ${verseTag}
       </div>
-      <div class="ref-text">${esc(bookData.passages[ref.p])}</div>
+      <div class="ref-text">${highlightPassage(bookData.passages[ref.p], activeChapter, ref.v)}</div>
     `;
     refsListEl.appendChild(card);
   }
@@ -500,7 +500,7 @@ function renderChapter(bookData, chData) {
         </div>
         ${verseTag}
       </div>
-      <div class="ref-text">${esc(bookData.passages[ref.p])}</div>
+      <div class="ref-text">${highlightPassage(bookData.passages[ref.p], activeChapter, ref.v)}</div>
     `;
     refsListEl.appendChild(card);
   }
@@ -671,7 +671,7 @@ function renderWork(data) {
         </div>
         ${locTag}
       </div>
-      <div class="ref-text">${esc(data.passages[ref.p])}</div>
+      <div class="ref-text">${highlightPassage(data.passages[ref.p], ref.chapter, ref.v)}</div>
     `;
     workRefsListEl.appendChild(card);
   }
@@ -695,6 +695,65 @@ function esc(str) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function toRoman(n) {
+  const vals = [100,90,50,40,10,9,5,4,1];
+  const syms = ['c','xc','l','xl','x','ix','v','iv','i'];
+  let r = '';
+  for (let i = 0; i < vals.length; i++) while (n >= vals[i]) { r += syms[i]; n -= vals[i]; }
+  return r;
+}
+
+// Returns safe HTML for a passage with the sentence containing the chapter:verse
+// citation wrapped in <mark>. Falls back to esc(text) if no match found.
+function highlightPassage(text, chapter, verseKey) {
+  if (!text) return "";
+  if (!verseKey || verseKey === "whole") return esc(text);
+
+  const verseStart = String(verseKey).split(/[-,]/)[0].trim();
+  if (!verseStart || !/^\d+$/.test(verseStart)) return esc(text);
+
+  const ch = String(chapter);
+  const roman = toRoman(Number(chapter));
+  // Match chapter (arabic or roman) + separator + verse number
+  const chPat = `(?:${ch}|${roman})`;
+  const re = new RegExp(`${chPat}\\s*[.:\\s]+${verseStart}\\b`, 'i');
+
+  const m = re.exec(text);
+  if (!m) return esc(text);
+
+  // Find sentence start: scan backwards.
+  // Only break on [.!?] if followed by whitespace then an uppercase letter —
+  // this distinguishes real sentence ends from abbreviations like "Rom." or "I Cor."
+  let s = m.index;
+  while (s > 0) {
+    const prev = text[s - 1];
+    if (prev === '\n' && (s < 2 || text[s - 2] === '\n')) break; // paragraph break
+    if (prev === '.' || prev === '!' || prev === '?') {
+      if (/^\s+[A-Z"(\[]/.test(text.slice(s))) break;
+    }
+    s--;
+  }
+  // Skip leading whitespace so the highlight doesn't open with spaces
+  while (s < m.index && text[s] === ' ') s++;
+
+  // Find sentence end: scan forwards.
+  // Only break on [.!?] if it's a real sentence end (followed by uppercase or end of text).
+  let e = m.index + m[0].length;
+  while (e < text.length) {
+    const c = text[e];
+    if (c === '\n' && e + 1 < text.length && text[e + 1] === '\n') { e += 2; break; }
+    if (c === '.' || c === '!' || c === '?') {
+      const rest = text.slice(e + 1).replace(/^['")\]]*/, '');
+      if (rest === '' || /^\s+[A-Z"(\[]/.test(rest) || /^\s*$/.test(rest)) { e++; break; }
+    }
+    e++;
+  }
+
+  return esc(text.slice(0, s)) +
+    `<mark>${esc(text.slice(s, e))}</mark>` +
+    esc(text.slice(e));
 }
 
 // ── Visualizations ────────────────────────────────────────────────────────────
