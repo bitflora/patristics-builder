@@ -4,14 +4,15 @@ Go replacement for src/builder.py.
 Reads the SQLite database and generates static zstd-compressed JSON files
 for the viewer. Run from the repository root:
 
-  go run ./cmd/builder               # build everything
-  go run ./cmd/builder --book romans # build only one book
-  go run ./cmd/builder --clean       # delete data/static/ before building
+	go run ./cmd/builder               # build everything
+	go run ./cmd/builder --book romans # build only one book
+	go run ./cmd/builder --clean       # delete data/static/ before building
 
 Outputs:
-  data/static/index.json.zst                      — book list with per-chapter ref counts
-  data/static/bible/{book-slug}/{ch}.json.zst     — all references for a chapter
-  data/static/manuscripts/{id}.json.zst           — all references from a single work
+
+	data/static/index.json.zst                      — book list with per-chapter ref counts
+	data/static/bible/{book-slug}/{ch}.json.zst     — all references for a chapter
+	data/static/manuscripts/{id}.json.zst           — all references from a single work
 */
 package main
 
@@ -121,7 +122,7 @@ func writeZstJSON(path string, payload any) error {
 		return err
 	}
 	defer f.Close()
-	zw, err := zstd.NewWriter(f, zstd.WithEncoderLevel(zstd.SpeedBetterCompression))
+	zw, err := zstd.NewWriter(f, zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(20)))
 	if err != nil {
 		return err
 	}
