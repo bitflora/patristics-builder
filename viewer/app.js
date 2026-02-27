@@ -229,7 +229,9 @@ function showWelcome() {
 async function loadKJV() {
   if (kjvData) return kjvData;
   if (!kjvLoadPromise) {
-    kjvLoadPromise = fetchJSON(`${DATA_ROOT}/kjv.json.zst`).then(d => { kjvData = d; return d; });
+    kjvLoadPromise = fetchJSON(`${DATA_ROOT}/kjv.json.zst`)
+      .then(d => { kjvData = d; return d; })
+      .catch(() => null); // KJV text is optional; verse table still works without it
   }
   return kjvLoadPromise;
 }
@@ -616,7 +618,7 @@ async function loadWork(workId) {
   try {
     data = await fetchJSON(`${DATA_ROOT}/manuscripts/${workId}.json.zst`);
   } catch (err) {
-    workRefsListEl.innerHTML = `<p class="no-refs">Could not load work data. Have you run builder.py?</p>`;
+    workRefsListEl.innerHTML = `<p class="no-refs">Could not load work data. Have you run the builder?</p>`;
     return;
   }
 
@@ -1298,7 +1300,7 @@ async function init() {
   } catch (err) {
     bookListEl.innerHTML = `<p style="padding:.75rem;color:var(--muted);font-size:.85rem">
       Could not load index.json.<br>Run <code>python src/parser.py</code> then
-      <code>python src/builder.py</code> first.
+      <code>go run ./cmd/builder</code> first.
     </p>`;
     return;
   }

@@ -49,13 +49,20 @@ def create_schema(db_path: Path = DB_PATH) -> None:
             CREATE INDEX IF NOT EXISTS idx_refs_manuscript
                 ON verse_refs(manuscript_id);
         """)
+        # Migration: add source_format column if absent (existing rows default to 'txt')
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(manuscripts)")}
+        if "source_format" not in cols:
+            conn.execute(
+                "ALTER TABLE manuscripts ADD COLUMN source_format TEXT NOT NULL DEFAULT 'txt'"
+            )
     conn.close()
     print(f"Schema created at {db_path}")
 
 
 def upsert_manuscript(conn: sqlite3.Connection, filename: str, author: str | None = None,
                        title: str | None = None, year: int | None = None,
-                       ccel_url: str | None = None, category: str | None = None) -> int:
+                       ccel_url: str | None = None, category: str | None = None,
+                       source_format: str = "txt") -> int:
     """Insert or update a manuscript record, returning its id."""
     cur = conn.execute(
         "SELECT id FROM manuscripts WHERE filename = ?", (filename,)
@@ -63,15 +70,15 @@ def upsert_manuscript(conn: sqlite3.Connection, filename: str, author: str | Non
     row = cur.fetchone()
     if row:
         conn.execute(
-            """UPDATE manuscripts SET author=?, title=?, year=?, ccel_url=?, category=?
-               WHERE id=?""",
-            (author, title, year, ccel_url, category, row["id"])
+            """UPDATE manuscripts SET author=?, title=?, year=?, ccel_url=?, category=?,
+               source_format=? WHERE id=?""",
+            (author, title, year, ccel_url, category, source_format, row["id"])
         )
         return row["id"]
     cur = conn.execute(
-        """INSERT INTO manuscripts (filename, author, title, year, ccel_url, category)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (filename, author, title, year, ccel_url, category)
+        """INSERT INTO manuscripts (filename, author, title, year, ccel_url, category, source_format)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (filename, author, title, year, ccel_url, category, source_format)
     )
     return cur.lastrowid
 

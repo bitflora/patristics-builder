@@ -7,8 +7,11 @@ Usage:
   python src/parser.py manuscripts/mort.txt     # parse a single file
   python src/parser.py --dry-run manuscripts/mort.txt  # print matches, no DB write
   python src/parser.py --stats                  # show DB stats after parsing
+  python src/parser.py --include-thml           # also parse works that have a ThML version
 
 The parser is idempotent: re-running a file first deletes its existing rows.
+By default any manuscript whose ccel_url is already sourced from ThML is skipped
+(parse_thml.py is the preferred source for those works).
 """
 from __future__ import annotations
 
@@ -404,11 +407,23 @@ def _find_inline_ref_offset(text: str, footnote_num: int, before_offset: int) ->
 
 # ── Main parsing logic ────────────────────────────────────────────────────────
 
+def _thml_url_exists(conn, ccel_url: str | None) -> bool:
+    """Return True if *ccel_url* is already in the DB with source_format='thml'."""
+    if not ccel_url:
+        return False
+    row = conn.execute(
+        "SELECT id FROM manuscripts WHERE ccel_url = ? AND source_format = 'thml'",
+        (ccel_url,),
+    ).fetchone()
+    return row is not None
+
+
 def parse_file(
     path: Path,
     conn,
     dry_run: bool = False,
     verbose: bool = False,
+    skip_thml: bool = True,
 ) -> int:
     """
     Parse a manuscript file, extract citations, and insert rows into verse_refs.
@@ -431,6 +446,10 @@ def parse_file(
             )
         else:
             ccel_url = None
+
+    if skip_thml and not dry_run and _thml_url_exists(conn, ccel_url):
+        print(f"\nSkipping: {filename}  (ThML version already in DB: {ccel_url})")
+        return 0
 
     print(f"\nParsing: {filename}")
     if author:
@@ -544,6 +563,8 @@ def main() -> None:
     ap.add_argument("--dry-run", action="store_true", help="Print matches without writing to DB")
     ap.add_argument("--verbose", "-v", action="store_true", help="Print each citation found")
     ap.add_argument("--stats", action="store_true", help="Show DB stats after parsing")
+    ap.add_argument("--include-thml", action="store_true",
+                    help="Parse works even if a ThML version already exists in the DB")
     args = ap.parse_args()
 
     create_schema()
@@ -556,12 +577,15 @@ def main() -> None:
         # Skip tiny/test files
         paths = [p for p in paths if p.stat().st_size > 1000]
 
+    skip_thml = not args.include_thml
+
     total = 0
     for path in paths:
         if not path.exists():
             print(f"File not found: {path}", file=sys.stderr)
             continue
-        total += parse_file(path, conn, dry_run=args.dry_run, verbose=args.verbose)
+        total += parse_file(path, conn, dry_run=args.dry_run, verbose=args.verbose,
+                            skip_thml=skip_thml)
 
     print(f"\nTotal citations across all files: {total}")
 

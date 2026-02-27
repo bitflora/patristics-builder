@@ -145,7 +145,7 @@ def main() -> None:
 
     conn.close()
 
-    print("\nDone. Run  python src/builder.py --clean  to rebuild the static output.")
+    print("\nDone. Run  go run ./cmd/builder --clean  to rebuild the static output.")
 
 
 if __name__ == "__main__":

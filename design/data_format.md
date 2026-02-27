@@ -102,7 +102,7 @@ Chapter counts in the index allow the viewer to display reference heatmaps witho
 - If a paragraph has ≤10 sentences → take the whole paragraph.
 - If >10 sentences → take a window of 10 centered on the citation sentence.
 - The `passage_start_offset` / `passage_end_offset` in `verse_refs` record the precomputed window.
-- To change the window size: re-run `builder.py` (no need to re-parse).
+- To change the window size: re-run `go run ./cmd/builder` (no need to re-parse).
 
 ## Why Offset-Based Storage
 

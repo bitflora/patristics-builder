@@ -1,5 +1,5 @@
 /*
-Go replacement for src/builder.py.
+Builder: reads the SQLite database and generates static JSON files for the viewer.
 
 Reads the SQLite database and generates static zstd-compressed JSON files
 for the viewer. Run from the repository root:
@@ -83,23 +83,34 @@ func main() {
 // loadCache reads all manuscript .txt files into memory as []rune slices.
 // Offsets stored in the DB are Python Unicode code point offsets (equivalent
 // to rune indices), so we store []rune for O(1) slicing.
+//
+// Each file is indexed under two keys so both old and new filename formats work:
+//   - bare filename ("mort.txt")          — used by txt-parsed manuscripts in the DB
+//   - repo-root-relative path with forward slashes ("manuscripts/ccel_thml/kempis/imit.txt")
+//     — used by ThML-parsed manuscripts in the DB
 func loadCache() (map[string][]rune, error) {
 	cache := make(map[string][]rune)
-	entries, err := os.ReadDir(manuscriptsDir)
-	if err != nil {
-		return nil, err
-	}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".txt") {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(manuscriptsDir, e.Name()))
+	err := filepath.WalkDir(manuscriptsDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil, err
+			return err
 		}
-		cache[e.Name()] = []rune(string(data))
-	}
-	return cache, nil
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".txt") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		runes := []rune(string(data))
+		// Key 1: bare filename — backward-compatible with existing txt manuscripts
+		cache[d.Name()] = runes
+		// Key 2: forward-slash path relative to repo root — matches ThML filenames in DB
+		if rel, err := filepath.Rel(repoRoot, path); err == nil {
+			cache[filepath.ToSlash(rel)] = runes
+		}
+		return nil
+	})
+	return cache, err
 }
 
 func openDB(path string) *sql.DB {

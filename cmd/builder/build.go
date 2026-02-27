@@ -405,12 +405,13 @@ func buildIndex(db *sql.DB, onlyBook string) {
 	}
 	chRows.Close()
 
-	// Global works list with total ref counts
+	// Global works list — only include manuscripts that have at least one citation
+	// so every entry in the index has a corresponding work file in data/static/manuscripts/.
 	wRows, err := db.Query(`
 		SELECT m.id, m.author, m.title, m.year, m.filename, m.category, m.ccel_url,
 		       COUNT(vr.id) AS ref_count
 		FROM manuscripts m
-		LEFT JOIN verse_refs vr ON vr.manuscript_id = m.id
+		JOIN verse_refs vr ON vr.manuscript_id = m.id
 		GROUP BY m.id
 		ORDER BY m.author, m.title
 	`)
