@@ -24,6 +24,8 @@ let activeMode = "viz";  // "scripture" | "works" | "viz"
 let activeWorkId = null;       // numeric manuscript id
 let kjvData = null;       // loaded lazily from kjv.json.zst
 let kjvLoadPromise = null;
+let passagesData = null;       // loaded lazily from passages.json.zst
+let passagesLoadPromise = null;
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const bookListEl       = document.getElementById("book-list");
@@ -236,6 +238,16 @@ async function loadKJV() {
   return kjvLoadPromise;
 }
 
+// ── Passage text loading ───────────────────────────────────────────────────────
+async function loadPassages() {
+  if (passagesData) return passagesData;
+  if (!passagesLoadPromise) {
+    passagesLoadPromise = fetchJSON(`${DATA_ROOT}/passages.json.zst`)
+      .then(d => { passagesData = d; return d; });
+  }
+  return passagesLoadPromise;
+}
+
 // ── Verse selection view ──────────────────────────────────────────────────────
 
 // Return the primary verse key for a ref.v value:
@@ -347,11 +359,13 @@ function renderVerseTable(bookData, chData, kjvChapter) {
   }
 }
 
-function loadChapterFiltered(bookData, chData, verseKey, kjvChapter) {
+async function loadChapterFiltered(bookData, chData, verseKey, kjvChapter) {
   activeVerse = verseKey;
 
   verseViewEl.hidden   = true;
   chapterViewEl.hidden = false;
+
+  await loadPassages();
 
   // Update chapter title to include verse
   const bookInfo = index.books.find(b => b.slug === activeBook);
@@ -412,7 +426,7 @@ function loadChapterFiltered(bookData, chData, verseKey, kjvChapter) {
         </div>
         ${verseTag}
       </div>
-      <div class="ref-text">${highlightPassage(bookData.passages[ref.p], activeChapter, ref.v)}</div>
+      <div class="ref-text">${highlightPassage(passagesData[ref.p], activeChapter, ref.v)}</div>
     `;
     refsListEl.appendChild(card);
   }
@@ -448,6 +462,7 @@ async function loadChapter(bookSlug, chapter) {
   }
 
   const chData = bookData.chapters.find(c => c.ch === chapter);
+  await loadPassages();
   renderChapter(bookData, chData);
 }
 
@@ -495,7 +510,7 @@ function renderChapter(bookData, chData) {
         </div>
         ${verseTag}
       </div>
-      <div class="ref-text">${highlightPassage(bookData.passages[ref.p], activeChapter, ref.v)}</div>
+      <div class="ref-text">${highlightPassage(passagesData[ref.p], activeChapter, ref.v)}</div>
     `;
     refsListEl.appendChild(card);
   }
@@ -622,6 +637,7 @@ async function loadWork(workId) {
     return;
   }
 
+  await loadPassages();
   renderWork(data);
 }
 
@@ -670,7 +686,7 @@ function renderWork(data) {
         </div>
         ${locTag}
       </div>
-      <div class="ref-text">${highlightPassage(data.passages[ref.p], ref.chapter, ref.v)}</div>
+      <div class="ref-text">${highlightPassage(passagesData[ref.p], ref.chapter, ref.v)}</div>
     `;
     workRefsListEl.appendChild(card);
   }
@@ -1306,6 +1322,8 @@ async function init() {
   }
 
   for (const w of index.works) worksById.set(w.id, w);
+
+  loadPassages(); // start fetching in background; awaited before first citation render
 
   renderCategoryFilters();
   renderSidebar();

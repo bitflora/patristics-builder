@@ -72,10 +72,12 @@ func main() {
 	db := openDB(dbPath)
 	defer db.Close()
 
-	buildAll(db, cache, *bookFlag)
+	gp := buildPassages(db, cache)
+	writePassages(gp)
+	buildAll(db, cache, *bookFlag, gp)
 	buildIndex(db, *bookFlag)
 	if *bookFlag == "" {
-		buildWorks(db, cache)
+		buildWorks(db, cache, gp)
 	}
 	cleanupUncompressed()
 }
