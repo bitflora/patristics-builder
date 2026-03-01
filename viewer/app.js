@@ -788,6 +788,7 @@ function renderVizTab() {
     vizViewEl.innerHTML = '<p class="no-refs" style="padding:.5rem 0">No categories selected.</p>';
     return;
   }
+  renderTopChaptersChart(cats);
   renderBibleHeatmap(cats);
   renderTopBooksChart(cats);
   renderWorksTimeline(cats);
@@ -834,8 +835,84 @@ function navigateToWork(workId) {
   loadWork(workId);   // Fetches and renders the work
 }
 
+// Navigate from viz to a specific chapter
+function navigateToChapter(slug, ch) {
+  activeBook = slug;
+  activeChapter = ch;
+  setMode('scripture');
+  loadChapter(slug, ch);
+}
+
 // Fixed-point helper for SVG coords
 function f(n) { return n.toFixed(2); }
+
+// ── 0. Top Chapters Bar Chart ─────────────────────────────────────────────────
+function renderTopChaptersChart(cats) {
+  const sec = makeVizSection('Most Cited Chapters');
+  const desc = document.createElement('p');
+  desc.className = 'viz-desc';
+  desc.textContent = 'Each bar is one Bible chapter. Color shows authorship period. Click to browse its citations.';
+  sec.appendChild(desc);
+
+  const colors = getCatColors();
+
+  const chapterData = [];
+  for (const book of index.books) {
+    for (const ch of book.chapters) {
+      const byCat = {};
+      let total = 0;
+      for (const [cat, n] of Object.entries(ch.by_cat || {})) {
+        if (cats.has(cat)) { byCat[cat] = (byCat[cat] || 0) + n; total += n; }
+      }
+      if (total > 0) {
+        chapterData.push({ label: `${book.name} ${ch.ch}`, slug: book.slug, ch: ch.ch, total, byCat });
+      }
+    }
+  }
+  chapterData.sort((a, b) => b.total - a.total);
+  const top = chapterData.slice(0, 30);
+
+  if (!top.length) { sec.innerHTML += '<p class="no-refs">No data.</p>'; return; }
+
+  const maxVal = top[0].total;
+  const allCats = [...cats].sort();
+  const ROW_H = 28, LBL_W = 145, BAR_MAX = 380, SVG_W = LBL_W + BAR_MAX + 55;
+  const SVG_H = top.length * ROW_H + 8;
+
+  let s = [`<svg class="viz-svg" viewBox="0 0 ${SVG_W} ${SVG_H}">`];
+
+  for (let i = 0; i < top.length; i++) {
+    const item = top[i];
+    const y = i * ROW_H + 4;
+    const label = item.label.length > 20 ? item.label.slice(0, 19) + '…' : item.label;
+    s.push(`<text x="${LBL_W - 6}" y="${y + 14}" class="viz-bar-label" text-anchor="end">${esc(label)}</text>`);
+
+    let xOff = LBL_W;
+    for (const cat of allCats) {
+      const n = item.byCat[cat] || 0;
+      if (!n) continue;
+      const w = Math.max(1, (n / maxVal) * BAR_MAX);
+      const col = colors.get(cat) || '#7a5c38';
+      s.push(`<rect x="${f(xOff)}" y="${y}" width="${f(w)}" height="18" fill="${col}" rx="2"><title>${esc(cat)}: ${n}</title></rect>`);
+      xOff += w;
+    }
+    // Invisible hit target for click-to-navigate
+    const totalW = Math.max(1, (item.total / maxVal) * BAR_MAX);
+    s.push(`<rect x="${LBL_W}" y="${y}" width="${f(totalW)}" height="18" fill="transparent" class="viz-bar-hit" data-slug="${esc(item.slug)}" data-ch="${item.ch}"/>`);
+    s.push(`<text x="${f(LBL_W + (item.total / maxVal) * BAR_MAX + 5)}" y="${y + 14}" class="viz-bar-count">${item.total}</text>`);
+  }
+  s.push('</svg>');
+
+  const wrap = document.createElement('div');
+  wrap.className = 'viz-chart-wrap';
+  wrap.innerHTML = s.join('');
+  wrap.querySelector('svg').addEventListener('click', e => {
+    const hit = e.target.closest('[data-slug]');
+    if (hit) navigateToChapter(hit.getAttribute('data-slug'), +hit.getAttribute('data-ch'));
+  });
+  sec.appendChild(wrap);
+  sec.appendChild(buildCatLegend(allCats, colors));
+}
 
 // ── 1. Bible Coverage Heatmap ─────────────────────────────────────────────────
 function renderBibleHeatmap(cats) {
