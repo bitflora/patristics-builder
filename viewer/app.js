@@ -618,15 +618,10 @@ worksSearchEl.addEventListener("input", () => renderWorksList(worksSearchEl.valu
 
 // ── Work loading ──────────────────────────────────────────────────────────────
 async function loadWork(workId) {
-  activeMode = "works";
-  for (const tab of modeTabEls) tab.classList.toggle("active", tab.dataset.mode === "works");
-
   activeWorkId = workId;
+  setMode('works');
   renderWorksList(worksSearchEl.value);
 
-  welcomeEl.hidden = true;
-  chapterViewEl.hidden = true;
-  workViewEl.hidden = false;
   workRefsListEl.innerHTML = `<p class="loading">Loading…</p>`;
 
   let data;
