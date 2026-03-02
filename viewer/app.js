@@ -793,6 +793,7 @@ function renderVizTab() {
   renderTopBooksChart(cats);
   renderWorksTimeline(cats);
   renderBibleRefsByDate(cats, version); // async, fills in after data loads
+  renderWormtrail(cats, version);       // async, fills in after data loads
   renderCategoryDonut(cats);
 }
 
@@ -1301,7 +1302,154 @@ async function renderBibleRefsByDate(cats, version) {
   sec.appendChild(legend);
 }
 
-// ── 5. Category Donut ─────────────────────────────────────────────────────────
+// ── 5. Citation Wormtrail ─────────────────────────────────────────────────────
+
+const WORM_HEAT = ['#f5f0ea', '#e8d5be', '#d4a96a', '#b5742a', '#7a3e10'];
+
+function wormHeat(count, colMax) {
+  if (!count || !colMax) return 0;
+  const r = count / colMax;
+  return r < 0.15 ? 1 : r < 0.40 ? 2 : r < 0.70 ? 3 : 4;
+}
+
+async function renderWormtrail(cats, version) {
+  const sec = makeVizSection('Citation Wormtrail');
+
+  const worksWithYear = index.works
+    .filter(w => w.year != null && cats.has(w.category || 'Other'));
+
+  if (!worksWithYear.length) {
+    sec.appendChild(Object.assign(document.createElement('p'),
+      { className: 'no-refs', textContent: 'No dated works in the selected categories.' }));
+    return;
+  }
+
+  const uncachedCount = worksWithYear.filter(w => !workRefsCache.has(w.id)).length;
+  let loadingEl = null;
+  if (uncachedCount > 0) {
+    loadingEl = document.createElement('p');
+    loadingEl.className = 'loading';
+    loadingEl.textContent = `Loading citation data for ${uncachedCount} work${uncachedCount !== 1 ? 's' : ''}…`;
+    sec.appendChild(loadingEl);
+  }
+
+  const workRefsData = await Promise.all(
+    worksWithYear.map(async w => {
+      const refs = await fetchWorkRefs(w.id);
+      const bookCounts = new Map();
+      for (const ref of refs) {
+        bookCounts.set(ref.book_slug, (bookCounts.get(ref.book_slug) || 0) + 1);
+      }
+      return { work: w, bookCounts };
+    })
+  );
+
+  if (_vizVersion !== version) return;
+  if (loadingEl) loadingEl.remove();
+
+  const minYear  = Math.min(...worksWithYear.map(w => w.year));
+  const maxYear  = Math.max(...worksWithYear.map(w => w.year));
+  const yearSpan = maxYear - minYear;
+  const BUCKET   = yearSpan < 200 ? 25 : yearSpan < 500 ? 50 : yearSpan < 1000 ? 100 : yearSpan < 2000 ? 200 : 500;
+
+  const desc = document.createElement('p');
+  desc.className = 'viz-desc';
+  desc.textContent = `Heat intensity of Bible book citations per ${BUCKET}-year period, normalized within each era. Click a row to explore that book.`;
+  sec.insertBefore(desc, sec.firstChild.nextSibling);
+
+  // Build time buckets
+  const firstBucket = Math.floor(minYear / BUCKET) * BUCKET;
+  const bucketKeys = [];
+  for (let b = firstBucket; b <= maxYear; b += BUCKET) {
+    const wInBucket = workRefsData.filter(d => d.work.year >= b && d.work.year < b + BUCKET);
+    if (wInBucket.length) bucketKeys.push(b);
+  }
+
+  if (!bucketKeys.length) {
+    sec.appendChild(Object.assign(document.createElement('p'),
+      { className: 'no-refs', textContent: 'No data.' }));
+    return;
+  }
+
+  // Sum (book, bucket) citation counts
+  const grid = new Map(); // book_slug → Map(bucketKey → count)
+  for (const { work, bookCounts } of workRefsData) {
+    const b = Math.floor(work.year / BUCKET) * BUCKET;
+    if (!bucketKeys.includes(b)) continue;
+    for (const [slug, n] of bookCounts) {
+      if (!grid.has(slug)) grid.set(slug, new Map());
+      const row = grid.get(slug);
+      row.set(b, (row.get(b) || 0) + n);
+    }
+  }
+
+  // Only include books that appear in index.books (canonical order)
+  const books = index.books.filter(b => grid.has(b.slug));
+  if (!books.length) {
+    sec.appendChild(Object.assign(document.createElement('p'),
+      { className: 'no-refs', textContent: 'No data.' }));
+    return;
+  }
+
+  // Per-column max for normalization
+  const colMax = new Map();
+  for (const bk of books) {
+    const row = grid.get(bk.slug);
+    for (const [b, n] of row) {
+      colMax.set(b, Math.max(colMax.get(b) || 0, n));
+    }
+  }
+
+  const SVG_W  = 680;
+  const LABEL_W = 65;
+  const PAD_T  = 22;
+  const PAD_B  = 6;
+  const CELL_H = 8;
+  const CELL_W = (SVG_W - LABEL_W) / bucketKeys.length;
+  const SVG_H  = PAD_T + books.length * CELL_H + PAD_B;
+
+  let s = [`<svg class="viz-svg" viewBox="0 0 ${SVG_W} ${SVG_H}" style="font-family:Georgia,serif">`];
+
+  // Column (year) labels across the top
+  for (let ci = 0; ci < bucketKeys.length; ci++) {
+    const cx = f(LABEL_W + ci * CELL_W + CELL_W / 2);
+    s.push(`<text x="${cx}" y="${f(PAD_T - 4)}" text-anchor="middle" font-size="7" fill="var(--muted)">${bucketKeys[ci]}</text>`);
+  }
+
+  // Rows: one per book
+  for (let ri = 0; ri < books.length; ri++) {
+    const bk   = books[ri];
+    const row  = grid.get(bk.slug);
+    const ry   = PAD_T + ri * CELL_H;
+    const label = bk.name.length > 9 ? bk.name.slice(0, 8) + '\u2026' : bk.name;
+
+    // Book name label
+    s.push(`<text x="${f(LABEL_W - 3)}" y="${f(ry + CELL_H * 0.72)}" text-anchor="end" font-size="7" fill="var(--text)">${esc(label)}</text>`);
+
+    // Heat cells
+    for (let ci = 0; ci < bucketKeys.length; ci++) {
+      const b     = bucketKeys[ci];
+      const count = row ? (row.get(b) || 0) : 0;
+      const level = wormHeat(count, colMax.get(b) || 0);
+      const cx    = f(LABEL_W + ci * CELL_W);
+      const fill  = WORM_HEAT[level];
+      const title = count ? `${bk.name} · ${b}s: ${count} refs` : '';
+      s.push(`<rect x="${cx}" y="${f(ry)}" width="${f(CELL_W - 0.5)}" height="${f(CELL_H - 0.5)}" fill="${fill}"${title ? `><title>${esc(title)}</title></rect>` : '/>'}`);
+    }
+
+    // Transparent hit target for click-to-navigate
+    s.push(`<rect x="0" y="${f(ry)}" width="${SVG_W}" height="${f(CELL_H)}" fill="transparent" style="cursor:pointer" onclick="navigateToBook('${bk.slug}')" />`);
+  }
+
+  s.push('</svg>');
+
+  const wrap = document.createElement('div');
+  wrap.className = 'viz-chart-wrap';
+  wrap.innerHTML = s.join('');
+  sec.appendChild(wrap);
+}
+
+// ── 6. Category Donut ─────────────────────────────────────────────────────────
 function renderCategoryDonut(cats) {
   const sec = makeVizSection('Corpus by Category');
   const colors = getCatColors();
