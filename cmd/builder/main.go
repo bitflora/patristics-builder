@@ -63,17 +63,24 @@ func main() {
 		log.Fatalf("Database not found at %s. Run parser.py first.", dbPath)
 	}
 
-	cache, err := loadCache()
-	if err != nil {
-		log.Fatalf("loading manuscript cache: %v", err)
-	}
-	fmt.Printf("Loaded %d manuscript files into memory.\n", len(cache))
-
+	// Open DB first — loadCache needs it to filter to referenced files only.
 	db := openDB(dbPath)
 	defer db.Close()
 
+	cache, err := loadCache(db)
+	if err != nil {
+		log.Fatalf("loading manuscript cache: %v", err)
+	}
+	fmt.Printf("Loaded %d manuscript files into memory.\n", len(cache)/2)
+
 	gp := buildPassages(db, cache)
 	writePassages(gp)
+
+	// All passages are interned in gp. Subsequent gp.intern() calls hit the
+	// fast path without touching cache — release it before the parallel phase.
+	cache = nil
+	runtime.GC()
+
 	buildAll(db, cache, *bookFlag, gp)
 	buildIndex(db, *bookFlag)
 	if *bookFlag == "" {
@@ -82,34 +89,64 @@ func main() {
 	cleanupUncompressed()
 }
 
-// loadCache reads all manuscript .txt files into memory as []rune slices.
-// Offsets stored in the DB are Python Unicode code point offsets (equivalent
-// to rune indices), so we store []rune for O(1) slicing.
+// loadCache reads only the manuscript .txt files that are actually referenced in
+// verse_refs into memory as []rune slices. Offsets stored in the DB are Python
+// Unicode code point offsets (equivalent to rune indices), so we store []rune
+// for O(1) slicing.
 //
 // Each file is indexed under two keys so both old and new filename formats work:
 //   - bare filename ("mort.txt")          — used by txt-parsed manuscripts in the DB
 //   - repo-root-relative path with forward slashes ("manuscripts/ccel_thml/kempis/imit.txt")
 //     — used by ThML-parsed manuscripts in the DB
-func loadCache() (map[string][]rune, error) {
+func loadCache(db *sql.DB) (map[string][]rune, error) {
+	rows, err := db.Query(`
+		SELECT DISTINCT m.filename
+		FROM manuscripts m
+		JOIN verse_refs vr ON vr.manuscript_id = m.id
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("querying referenced manuscripts: %w", err)
+	}
+	defer rows.Close()
+
+	neededRelPaths := make(map[string]struct{})
+	for rows.Next() {
+		var filename string
+		if err := rows.Scan(&filename); err != nil {
+			return nil, fmt.Errorf("scanning manuscript filename: %w", err)
+		}
+		if !strings.HasPrefix(filename, "manuscripts/") {
+			filename = "manuscripts/" + filename
+		}
+		neededRelPaths[filename] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating manuscript filenames: %w", err)
+	}
+
 	cache := make(map[string][]rune)
-	err := filepath.WalkDir(manuscriptsDir, func(path string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(manuscriptsDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() || !strings.HasSuffix(d.Name(), ".txt") {
 			return nil
 		}
+		rel, relErr := filepath.Rel(repoRoot, path)
+		if relErr != nil {
+			return nil
+		}
+		relSlash := filepath.ToSlash(rel)
+		if _, needed := neededRelPaths[relSlash]; !needed {
+			return nil // skip unreferenced file
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
 		runes := []rune(string(data))
-		// Key 1: bare filename — backward-compatible with existing txt manuscripts
 		cache[d.Name()] = runes
-		// Key 2: forward-slash path relative to repo root — matches ThML filenames in DB
-		if rel, err := filepath.Rel(repoRoot, path); err == nil {
-			cache[filepath.ToSlash(rel)] = runes
-		}
+		cache[relSlash] = runes
 		return nil
 	})
 	return cache, err
