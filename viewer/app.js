@@ -1565,6 +1565,13 @@ function buildCatLegend(allCats, colors) {
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
+function dismissSpinner() {
+  const el = document.getElementById('spinner-overlay');
+  if (!el) return;
+  el.classList.add('fade-out');
+  el.addEventListener('transitionend', () => el.remove(), { once: true });
+}
+
 async function init() {
   try {
     index = await fetchJSON(`${DATA_ROOT}/index.json.zst`);
@@ -1573,6 +1580,7 @@ async function init() {
       Could not load index.json.<br>Run <code>python src/parser.py</code> then
       <code>go run ./cmd/builder</code> first.
     </p>`;
+    dismissSpinner();
     return;
   }
 
@@ -1584,6 +1592,7 @@ async function init() {
   renderSidebar();
   renderWorksList();
   setMode('viz');
+  passagesLoadPromise.then(dismissSpinner, dismissSpinner);
 }
 
 searchEl.addEventListener("input", () => renderSidebar(searchEl.value));
