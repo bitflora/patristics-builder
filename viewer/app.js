@@ -788,12 +788,12 @@ function renderVizTab() {
     vizViewEl.innerHTML = '<p class="no-refs" style="padding:.5rem 0">No categories selected.</p>';
     return;
   }
+  renderWormtrail(cats, version);       // async, fills in after data loads
   renderTopChaptersChart(cats);
   renderBibleHeatmap(cats);
   renderTopBooksChart(cats);
   renderWorksTimeline(cats);
   renderBibleRefsByDate(cats, version); // async, fills in after data loads
-  renderWormtrail(cats, version);       // async, fills in after data loads
   renderCategoryDonut(cats);
 }
 
@@ -1302,15 +1302,9 @@ async function renderBibleRefsByDate(cats, version) {
   sec.appendChild(legend);
 }
 
-// ── 5. Citation Wormtrail ─────────────────────────────────────────────────────
+// ── 5. Citation Wormtrail (Streamgraph) ───────────────────────────────────────
 
-const WORM_HEAT = ['#f5f0ea', '#e8d5be', '#d4a96a', '#b5742a', '#7a3e10'];
-
-function wormHeat(count, colMax) {
-  if (!count || !colMax) return 0;
-  const r = count / colMax;
-  return r < 0.15 ? 1 : r < 0.40 ? 2 : r < 0.70 ? 3 : 4;
-}
+const WORM_TOP_N = 20; // most-cited books to show
 
 async function renderWormtrail(cats, version) {
   const sec = makeVizSection('Citation Wormtrail');
@@ -1352,17 +1346,12 @@ async function renderWormtrail(cats, version) {
   const yearSpan = maxYear - minYear;
   const BUCKET   = yearSpan < 200 ? 25 : yearSpan < 500 ? 50 : yearSpan < 1000 ? 100 : yearSpan < 2000 ? 200 : 500;
 
-  const desc = document.createElement('p');
-  desc.className = 'viz-desc';
-  desc.textContent = `Heat intensity of Bible book citations per ${BUCKET}-year period, normalized within each era. Click a row to explore that book.`;
-  sec.insertBefore(desc, sec.firstChild.nextSibling);
-
-  // Build time buckets
+  // Non-empty buckets only
   const firstBucket = Math.floor(minYear / BUCKET) * BUCKET;
   const bucketKeys = [];
   for (let b = firstBucket; b <= maxYear; b += BUCKET) {
-    const wInBucket = workRefsData.filter(d => d.work.year >= b && d.work.year < b + BUCKET);
-    if (wInBucket.length) bucketKeys.push(b);
+    if (workRefsData.some(d => d.work.year >= b && d.work.year < b + BUCKET))
+      bucketKeys.push(b);
   }
 
   if (!bucketKeys.length) {
@@ -1371,74 +1360,120 @@ async function renderWormtrail(cats, version) {
     return;
   }
 
-  // Sum (book, bucket) citation counts
-  const grid = new Map(); // book_slug → Map(bucketKey → count)
+  // Build grid: book_slug → Map(bucketKey → count)
+  const grid = new Map();
   for (const { work, bookCounts } of workRefsData) {
     const b = Math.floor(work.year / BUCKET) * BUCKET;
     if (!bucketKeys.includes(b)) continue;
     for (const [slug, n] of bookCounts) {
       if (!grid.has(slug)) grid.set(slug, new Map());
-      const row = grid.get(slug);
-      row.set(b, (row.get(b) || 0) + n);
+      grid.get(slug).set(b, (grid.get(slug).get(b) || 0) + n);
     }
   }
 
-  // Only include books that appear in index.books (canonical order)
-  const books = index.books.filter(b => grid.has(b.slug));
+  // Top N books by total citations, preserved in canonical order
+  const bookTotals = new Map(
+    [...grid.entries()].map(([slug, m]) => [slug, [...m.values()].reduce((s, n) => s + n, 0)])
+  );
+  const topSlugs = new Set(
+    [...bookTotals.entries()].sort((a, b) => b[1] - a[1]).slice(0, WORM_TOP_N).map(([s]) => s)
+  );
+  const books = index.books.filter(b => topSlugs.has(b.slug));
+
   if (!books.length) {
     sec.appendChild(Object.assign(document.createElement('p'),
       { className: 'no-refs', textContent: 'No data.' }));
     return;
   }
 
-  // Per-column max for normalization
-  const colMax = new Map();
-  for (const bk of books) {
-    const row = grid.get(bk.slug);
-    for (const [b, n] of row) {
-      colMax.set(b, Math.max(colMax.get(b) || 0, n));
+  const desc = document.createElement('p');
+  desc.className = 'viz-desc';
+  desc.textContent = `Flowing citation share of the top ${books.length} most-cited Bible books across ${BUCKET}-year periods. Stream width reflects citation volume. Click a stream to explore that book.`;
+  sec.insertBefore(desc, sec.firstChild.nextSibling);
+
+  // Per-bucket totals (for the shown books only)
+  const N = bucketKeys.length;
+  const bucketTotals = bucketKeys.map(b =>
+    books.reduce((s, bk) => s + (grid.get(bk.slug)?.get(b) || 0), 0)
+  );
+  const maxTotal = Math.max(...bucketTotals, 1);
+
+  const SVG_W = 680, SVG_H = 320;
+  const PAD_L = 8, PAD_R = 8, PAD_T = 10, PAD_B = 24;
+  const PLOT_W = SVG_W - PAD_L - PAD_R;
+  const PLOT_H = SVG_H - PAD_T - PAD_B;
+  const centerY = PAD_T + PLOT_H / 2;
+
+  // X position for each bucket (spread evenly)
+  const xs = bucketKeys.map((_, i) =>
+    N === 1 ? PAD_L + PLOT_W / 2 : PAD_L + (i / (N - 1)) * PLOT_W
+  );
+
+  // Silhouette layout: stack books, centered around centerY
+  // tops[bi][ci] = upper SVG y, bots[bi][ci] = lower SVG y
+  const tops = books.map(() => new Array(N).fill(0));
+  const bots = books.map(() => new Array(N).fill(0));
+  for (let ci = 0; ci < N; ci++) {
+    const total = bucketTotals[ci];
+    const scale = PLOT_H / maxTotal;
+    let y = centerY - (total * scale / 2);
+    for (let bi = 0; bi < books.length; bi++) {
+      const h = (grid.get(books[bi].slug)?.get(bucketKeys[ci]) || 0) * scale;
+      tops[bi][ci] = y;
+      bots[bi][ci] = y + h;
+      y += h;
     }
   }
 
-  const SVG_W  = 680;
-  const LABEL_W = 65;
-  const PAD_T  = 22;
-  const PAD_B  = 6;
-  const CELL_H = 8;
-  const CELL_W = (SVG_W - LABEL_W) / bucketKeys.length;
-  const SVG_H  = PAD_T + books.length * CELL_H + PAD_B;
+  // Build a cubic-bezier smooth SVG area path for one stream
+  function streamPath(top, bot) {
+    if (N === 1) {
+      const x = xs[0];
+      return `M ${f(x - 4)},${f(top[0])} L ${f(x + 4)},${f(top[0])} L ${f(x + 4)},${f(bot[0])} L ${f(x - 4)},${f(bot[0])} Z`;
+    }
+    // Top edge left → right
+    let d = `M ${f(xs[0])},${f(top[0])}`;
+    for (let i = 1; i < N; i++) {
+      const mx = f((xs[i - 1] + xs[i]) / 2);
+      d += ` C ${mx},${f(top[i - 1])} ${mx},${f(top[i])} ${f(xs[i])},${f(top[i])}`;
+    }
+    // Bottom edge right → left
+    d += ` L ${f(xs[N - 1])},${f(bot[N - 1])}`;
+    for (let i = N - 2; i >= 0; i--) {
+      const mx = f((xs[i] + xs[i + 1]) / 2);
+      d += ` C ${mx},${f(bot[i + 1])} ${mx},${f(bot[i])} ${f(xs[i])},${f(bot[i])}`;
+    }
+    return d + ' Z';
+  }
 
   let s = [`<svg class="viz-svg" viewBox="0 0 ${SVG_W} ${SVG_H}" style="font-family:Georgia,serif">`];
 
-  // Column (year) labels across the top
-  for (let ci = 0; ci < bucketKeys.length; ci++) {
-    const cx = f(LABEL_W + ci * CELL_W + CELL_W / 2);
-    s.push(`<text x="${cx}" y="${f(PAD_T - 4)}" text-anchor="middle" font-size="7" fill="var(--muted)">${bucketKeys[ci]}</text>`);
+  // Streams
+  for (let bi = 0; bi < books.length; bi++) {
+    const bk    = books[bi];
+    const color = BOOK_GROUP_COLORS.get(BOOK_GROUP_MAP.get(bk.slug) ?? 'Deuterocanon') || '#888';
+    const total = bookTotals.get(bk.slug) || 0;
+    const d     = streamPath(tops[bi], bots[bi]);
+    s.push(`<path d="${d}" fill="${color}" fill-opacity="0.82" stroke="var(--bg,#fff)" stroke-width="0.6" style="cursor:pointer" onclick="navigateToBook('${bk.slug}')"><title>${esc(bk.name)}: ${total.toLocaleString()} refs total</title></path>`);
   }
 
-  // Rows: one per book
-  for (let ri = 0; ri < books.length; ri++) {
-    const bk   = books[ri];
-    const row  = grid.get(bk.slug);
-    const ry   = PAD_T + ri * CELL_H;
-    const label = bk.name.length > 9 ? bk.name.slice(0, 8) + '\u2026' : bk.name;
-
-    // Book name label
-    s.push(`<text x="${f(LABEL_W - 3)}" y="${f(ry + CELL_H * 0.72)}" text-anchor="end" font-size="7" fill="var(--text)">${esc(label)}</text>`);
-
-    // Heat cells
-    for (let ci = 0; ci < bucketKeys.length; ci++) {
-      const b     = bucketKeys[ci];
-      const count = row ? (row.get(b) || 0) : 0;
-      const level = wormHeat(count, colMax.get(b) || 0);
-      const cx    = f(LABEL_W + ci * CELL_W);
-      const fill  = WORM_HEAT[level];
-      const title = count ? `${bk.name} · ${b}s: ${count} refs` : '';
-      s.push(`<rect x="${cx}" y="${f(ry)}" width="${f(CELL_W - 0.5)}" height="${f(CELL_H - 0.5)}" fill="${fill}"${title ? `><title>${esc(title)}</title></rect>` : '/>'}`);
+  // Labels at each stream's widest bucket
+  for (let bi = 0; bi < books.length; bi++) {
+    let bestCi = 0, bestH = 0;
+    for (let ci = 0; ci < N; ci++) {
+      const h = bots[bi][ci] - tops[bi][ci];
+      if (h > bestH) { bestH = h; bestCi = ci; }
     }
+    if (bestH < 9) continue;
+    const lx = xs[bestCi];
+    const ly = (tops[bi][bestCi] + bots[bi][bestCi]) / 2;
+    const label = books[bi].name.length > 9 ? books[bi].name.slice(0, 8) + '\u2026' : books[bi].name;
+    s.push(`<text x="${f(lx)}" y="${f(ly + 2.5)}" text-anchor="middle" font-size="7" fill="rgba(0,0,0,0.7)" pointer-events="none">${esc(label)}</text>`);
+  }
 
-    // Transparent hit target for click-to-navigate
-    s.push(`<rect x="0" y="${f(ry)}" width="${SVG_W}" height="${f(CELL_H)}" fill="transparent" style="cursor:pointer" onclick="navigateToBook('${bk.slug}')" />`);
+  // Year labels along the bottom
+  for (let ci = 0; ci < N; ci++) {
+    s.push(`<text x="${f(xs[ci])}" y="${f(SVG_H - 6)}" text-anchor="middle" font-size="8" fill="var(--muted)">${bucketKeys[ci]}</text>`);
   }
 
   s.push('</svg>');
