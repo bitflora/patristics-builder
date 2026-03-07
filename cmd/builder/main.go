@@ -32,7 +32,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const maxPassageChars = 8000
+const maxPassageChars = 1500
 
 var (
 	repoRoot       = mustCwd()
@@ -55,7 +55,14 @@ func main() {
 	flag.Parse()
 
 	if *cleanFlag {
+		// Preserve hand-placed static assets that the builder doesn't generate.
+		exemptPath := filepath.Join(staticDir, "kjv.json.zst")
+		saved, _ := os.ReadFile(exemptPath)
 		os.RemoveAll(staticDir)
+		if saved != nil {
+			os.MkdirAll(staticDir, 0755)
+			os.WriteFile(exemptPath, saved, 0644)
+		}
 		fmt.Printf("Removed %s\n", staticDir)
 	}
 

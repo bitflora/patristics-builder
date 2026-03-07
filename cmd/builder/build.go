@@ -36,17 +36,10 @@ type bookPayload struct {
 	Chapters []bookChapter `json:"chapters"`
 }
 
-// passKey uniquely identifies a passage span within a manuscript file.
+// passKey uniquely identifies a passage by its citation anchor within a manuscript file.
 type passKey struct {
-	filename string
-	start    int
-	end      int
-}
-
-// passageKey returns a descriptive string key for a passage, e.g. "confessions_1234_5678".
-func passageKey(k passKey) string {
-	stem := strings.TrimSuffix(filepath.Base(k.filename), ".txt")
-	return fmt.Sprintf("%s_%d_%d", stem, k.start, k.end)
+	filename       string
+	citationOffset int
 }
 
 // GlobalPassages is the shared passage registry used across all build passes.
@@ -57,14 +50,32 @@ type GlobalPassages struct {
 	passages map[string]string  // string key → passage text
 }
 
-func (gp *GlobalPassages) intern(cache map[string][]rune, filename string, start, end int) string {
-	k := passKey{filename, start, end}
+func (gp *GlobalPassages) intern(cache map[string][]rune, filename string, citationOffset int) string {
+	k := passKey{filename, citationOffset}
 	if key, ok := gp.idx[k]; ok {
 		return key
 	}
-	key := passageKey(k)
+	var text string
+	var start, end int
+	runes := cache[filename]
+	if runes == nil {
+		text = fmt.Sprintf("[source file not found: %s]", filename)
+		start, end = citationOffset, citationOffset
+	} else {
+		start, end = expandToSentences(runes, citationOffset, 2, 3)
+		// Cap the extraction range before allocating a string to avoid
+		// scanning to end-of-file when sentence punctuation is sparse.
+		if end-start > maxPassageChars {
+			end = start + maxPassageChars
+		}
+		raw := strings.TrimSpace(string(runes[start:end]))
+		raw = multiBlankRe.ReplaceAllString(raw, "\n\n")
+		text = raw
+	}
+	stem := strings.TrimSuffix(filepath.Base(filename), ".txt")
+	key := fmt.Sprintf("%s_%d_%d", stem, start, end)
 	gp.idx[k] = key
-	gp.passages[key] = readPassage(cache, filename, start, end)
+	gp.passages[key] = text
 	return key
 }
 
@@ -75,7 +86,7 @@ func buildPassages(db *sql.DB, cache map[string][]rune) *GlobalPassages {
 		passages: make(map[string]string),
 	}
 	rows, err := db.Query(`
-		SELECT DISTINCT m.filename, vr.passage_start_offset, vr.passage_end_offset
+		SELECT DISTINCT m.filename, vr.citation_offset
 		FROM verse_refs vr
 		JOIN manuscripts m ON m.id = vr.manuscript_id
 	`)
@@ -85,11 +96,11 @@ func buildPassages(db *sql.DB, cache map[string][]rune) *GlobalPassages {
 	defer rows.Close()
 	for rows.Next() {
 		var filename string
-		var start, end int
-		if err := rows.Scan(&filename, &start, &end); err != nil {
+		var citationOffset int
+		if err := rows.Scan(&filename, &citationOffset); err != nil {
 			log.Fatalf("scanning passage row: %v", err)
 		}
-		gp.intern(cache, filename, start, end)
+		gp.intern(cache, filename, citationOffset)
 	}
 	fmt.Printf("Collected %d unique passages.\n", len(gp.passages))
 	return gp
@@ -106,29 +117,97 @@ func writePassages(gp *GlobalPassages) {
 
 // ── Passage extraction ────────────────────────────────────────────────────────
 
-// readPassage slices a passage from the pre-loaded rune cache.
-// start/end are Python Unicode code point offsets (rune indices).
-func readPassage(cache map[string][]rune, filename string, start, end int) string {
-	runes, ok := cache[filename]
-	if !ok {
-		return fmt.Sprintf("[source file not found: %s]", filename)
+// isClosingPunct returns true for punctuation that may follow sentence-ending marks.
+func isClosingPunct(r rune) bool {
+	switch r {
+	case '"', '\'', '\u201D', '\u2019', ')', ']', '}':
+		return true
 	}
-	if start < 0 {
-		start = 0
+	return false
+}
+
+// isSentenceEnd returns true if position i in runes marks the end of a sentence.
+// Sentence ends: '.', '?', '!' optionally followed by closing punct then whitespace
+// or end-of-text. Newlines are NOT treated as sentence ends because both CCEL .txt
+// files (80-char line-wrapped) and ThML-derived text have frequent mid-sentence
+// line breaks that are formatting artifacts, not sentence boundaries.
+func isSentenceEnd(runes []rune, i int) bool {
+	n := len(runes)
+	c := runes[i]
+	if c == '.' || c == '?' || c == '!' {
+		j := i + 1
+		for j < n && isClosingPunct(runes[j]) {
+			j++
+		}
+		return j >= n || runes[j] == ' ' || runes[j] == '\n' || runes[j] == '\t' || runes[j] == '\r'
 	}
-	if end > len(runes) {
-		end = len(runes)
+	return false
+}
+
+// findSentenceStartBefore scans runes backwards from pos, returning the rune index
+// at the start of the sentence count sentences before pos.
+// Returns 0 if fewer than count sentence boundaries exist before pos.
+func findSentenceStartBefore(runes []rune, pos, count int) int {
+	found := 0
+	for i := pos - 1; i >= 0; i-- {
+		if isSentenceEnd(runes, i) {
+			found++
+			if found == count {
+				j := i + 1
+				for j < pos && (runes[j] == ' ' || runes[j] == '\t' || runes[j] == '\r' || runes[j] == '\n') {
+					j++
+				}
+				return j
+			}
+		}
 	}
-	if start > end {
-		start = end
+	return 0
+}
+
+// findSentenceEndAfter scans runes forward from pos, returning the rune index
+// (exclusive) after count sentence-ending boundaries ('.', '?', '!').
+// Newlines are treated as ordinary characters. Returns len(runes) if fewer
+// than count boundaries exist.
+func findSentenceEndAfter(runes []rune, pos, count int) int {
+	n := len(runes)
+	found := 0
+	i := pos
+	for i < n {
+		c := runes[i]
+		if c == '.' || c == '?' || c == '!' {
+			j := i + 1
+			for j < n && isClosingPunct(runes[j]) {
+				j++
+			}
+			if j >= n || runes[j] == ' ' || runes[j] == '\n' || runes[j] == '\t' || runes[j] == '\r' {
+				found++
+				if found == count {
+					return j
+				}
+			}
+			i = j
+		} else {
+			i++
+		}
 	}
-	snippet := strings.TrimSpace(string(runes[start:end]))
-	snippet = multiBlankRe.ReplaceAllString(snippet, "\n\n")
-	sr := []rune(snippet)
-	if len(sr) > maxPassageChars {
-		snippet = string(sr[:maxPassageChars])
+	return n
+}
+
+// expandToSentences returns start/end rune indices covering numBefore complete
+// sentences before and numAfter complete sentences after citationOffset.
+// Sentence boundaries are detected by '.', '?', '!' followed by whitespace only;
+// newlines are not counted as boundaries because manuscripts use line-wrapped text.
+func expandToSentences(runes []rune, citationOffset, numBefore, numAfter int) (int, int) {
+	n := len(runes)
+	if citationOffset < 0 {
+		citationOffset = 0
 	}
-	return snippet
+	if citationOffset > n {
+		citationOffset = n
+	}
+	start := findSentenceStartBefore(runes, citationOffset, numBefore)
+	end := findSentenceEndAfter(runes, citationOffset, numAfter)
+	return start, end
 }
 
 // verseLabel returns the verse label string as a pointer (nil for chapter-level refs).
@@ -188,7 +267,7 @@ func buildBook(db *sql.DB, cache map[string][]rune, bookSlug string, gp *GlobalP
 		SELECT
 			vr.chapter,
 			vr.verse_start, vr.verse_end,
-			vr.passage_start_offset, vr.passage_end_offset,
+			vr.citation_offset,
 			m.id AS manuscript_id,
 			m.filename
 		FROM verse_refs vr
@@ -210,11 +289,11 @@ func buildBook(db *sql.DB, cache map[string][]rune, bookSlug string, gp *GlobalP
 	for rows.Next() {
 		var chapter int
 		var verseStart, verseEnd sql.NullInt64
-		var passStart, passEnd int64
+		var citationOffset int64
 		var mID int64
 		var filename string
 
-		if err := rows.Scan(&chapter, &verseStart, &verseEnd, &passStart, &passEnd,
+		if err := rows.Scan(&chapter, &verseStart, &verseEnd, &citationOffset,
 			&mID, &filename); err != nil {
 			log.Printf("scanning ref row for %s: %v", bookSlug, err)
 			continue
@@ -225,7 +304,7 @@ func buildBook(db *sql.DB, cache map[string][]rune, bookSlug string, gp *GlobalP
 			chapterOrder = append(chapterOrder, chapter)
 		}
 
-		key := gp.intern(cache, filename, int(passStart), int(passEnd))
+		key := gp.intern(cache, filename, int(citationOffset))
 
 		chapterMap[chapter] = append(chapterMap[chapter], bookRef{
 			V: verseLabel(verseStart, verseEnd),
@@ -346,7 +425,7 @@ func buildWorks(db *sql.DB, cache map[string][]rune, gp *GlobalPassages) {
 		refRows, err := db.Query(`
 			SELECT vr.book, vr.book_slug, vr.chapter,
 			       vr.verse_start, vr.verse_end,
-			       vr.passage_start_offset, vr.passage_end_offset
+			       vr.citation_offset
 			FROM verse_refs vr
 			WHERE vr.manuscript_id = ?
 			ORDER BY vr.book_slug, vr.chapter, vr.verse_start NULLS LAST
@@ -361,15 +440,15 @@ func buildWorks(db *sql.DB, cache map[string][]rune, gp *GlobalPassages) {
 			var book, bookSlug string
 			var chapter int
 			var verseStart, verseEnd sql.NullInt64
-			var passStart, passEnd int
+			var citationOffset int
 
 			if err := refRows.Scan(&book, &bookSlug, &chapter,
-				&verseStart, &verseEnd, &passStart, &passEnd); err != nil {
+				&verseStart, &verseEnd, &citationOffset); err != nil {
 				log.Printf("scanning ref for manuscript %d: %v", m.id, err)
 				continue
 			}
 
-			key := gp.intern(cache, m.filename, passStart, passEnd)
+			key := gp.intern(cache, m.filename, citationOffset)
 
 			refs = append(refs, workRef{
 				Book:     book,
