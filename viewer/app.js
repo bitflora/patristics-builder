@@ -619,10 +619,12 @@ function renderWorksList(filter = "") {
       ? `<span class="work-ref-badge">${work.ref_count.toLocaleString()}</span>`
       : "";
 
+    const categoryStr = work.category || "Other";
     btn.innerHTML = `
       <span class="work-btn-text">
         <span class="work-author">${esc(work.author)}</span>
         <span class="work-title-sm"> — ${esc(work.title)}${esc(yearStr)}</span>
+        <span class="work-category-tag">${esc(categoryStr)}</span>
       </span>
       ${badge}
     `;
