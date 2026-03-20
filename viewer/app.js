@@ -565,8 +565,15 @@ function renderCategoryFilters() {
     const cb = document.createElement("input");
     cb.type = "checkbox";
     cb.value = cat;
-    cb.checked = true;
-    cb.addEventListener("change", applyFilters);
+    const saved = localStorage.getItem("hiddenCats");
+    const hidden = saved ? JSON.parse(saved) : [];
+    cb.checked = !hidden.includes(cat);
+    cb.addEventListener("change", () => {
+      const nowHidden = [...categoryFiltersEl.querySelectorAll("input[type=checkbox]")]
+        .filter(c => !c.checked).map(c => c.value);
+      localStorage.setItem("hiddenCats", JSON.stringify(nowHidden));
+      applyFilters();
+    });
     label.appendChild(cb);
     label.appendChild(document.createTextNode(" " + cat));
     categoryFiltersEl.appendChild(label);
