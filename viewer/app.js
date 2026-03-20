@@ -424,6 +424,7 @@ async function loadChapterFiltered(bookData, chData, verseKey, kjvChapter) {
     card.className = "ref-card";
     card.dataset.author   = work.author;
     card.dataset.category = work.category || "Other";
+    card.style.borderLeft = `3px solid ${catColor(work.category || 'Other')}`;
 
     const verseTag = ref.v
       ? `<span class="ref-verse-tag">v.\u00a0${esc(ref.v)}</span>`
@@ -509,6 +510,7 @@ function renderChapter(bookData, chData) {
     card.className = "ref-card";
     card.dataset.author = work.author;
     card.dataset.category = work.category || "Other";
+    card.style.borderLeft = `3px solid ${catColor(work.category || 'Other')}`;
 
     const verseTag = ref.v
       ? `<span class="ref-verse-tag">v. ${ref.v}</span>`
@@ -574,8 +576,11 @@ function renderCategoryFilters() {
       localStorage.setItem("hiddenCats", JSON.stringify(nowHidden));
       applyFilters();
     });
+    const dot = document.createElement("span");
+    dot.style.cssText = `display:inline-block;width:8px;height:8px;border-radius:50%;background:${catColor(cat)};margin:0 4px 0 2px;vertical-align:middle;opacity:0.9;flex-shrink:0;`;
     label.appendChild(cb);
-    label.appendChild(document.createTextNode(" " + cat));
+    label.appendChild(dot);
+    label.appendChild(document.createTextNode(cat));
     categoryFiltersEl.appendChild(label);
   }
 }
@@ -631,7 +636,7 @@ function renderWorksList(filter = "") {
       <span class="work-btn-text">
         <span class="work-author">${esc(work.author)}</span>
         <span class="work-title-sm"> — ${esc(work.title)}${esc(yearStr)}</span>
-        <span class="work-category-tag">${esc(categoryStr)}</span>
+        <span class="work-category-tag" style="background:${catColor(categoryStr)}22;color:${catColor(categoryStr)};border-color:${catColor(categoryStr)}44">${esc(categoryStr)}</span>
       </span>
       ${badge}
     `;
@@ -795,14 +800,30 @@ function highlightPassage(text, chapter, verseKey) {
 
 // ── Visualizations ────────────────────────────────────────────────────────────
 
-// Earthy palette that complements the app's warm brown theme
-const CAT_PALETTE = ['#7a5c38','#4a8c6a','#5c7aa8','#9a6b4b','#7a4a6a','#5c8a5c','#8a7a4a','#6a5c8a'];
+// Fixed per-category colors that complement the app's warm brown theme
+const CAT_COLORS = {
+  'Apologetics':         '#8a5a28',
+  'Biblical Commentary': '#5a7a28',
+  'Church History':      '#2a7878',
+  'Devotional':          '#8a3a68',
+  'Medieval':            '#6a4a8a',
+  'Other':               '#6a6a6a',
+  'Patristics':          '#8a3838',
+  'Puritan':             '#4a5a78',
+  'Reformation':         '#2a7a48',
+  'Scripture':           '#7a6818',
+  'Sermons':             '#8a6818',
+  'Systematic Theology': '#3a5888',
+};
 let _catColorMap = null;
+
+function catColor(cat) {
+  return CAT_COLORS[cat] || '#6a6a6a';
+}
 
 function getCatColors() {
   if (!_catColorMap) {
-    const cats = [...new Set(index.works.map(w => w.category || 'Other'))].sort();
-    _catColorMap = new Map(cats.map((c, i) => [c, CAT_PALETTE[i % CAT_PALETTE.length]]));
+    _catColorMap = new Map(Object.entries(CAT_COLORS));
   }
   return _catColorMap;
 }
