@@ -13,6 +13,15 @@
 
 const DATA_ROOT = "data/static";
 
+// ── URL Hash Navigation ───────────────────────────────────────────────────────
+let _restoringFromHash = false;
+
+function pushNav(hash) {
+  if (_restoringFromHash) return;
+  if (location.hash === hash) return;
+  history.pushState(null, '', hash);
+}
+
 // ── State ─────────────────────────────────────────────────────────────────────
 let index = null;         // loaded from index.json.zst
 let worksById = new Map(); // manuscript id → work entry (from index)
@@ -142,7 +151,12 @@ function setMode(mode) {
 }
 
 for (const tab of modeTabEls)
-  tab.addEventListener("click", () => setMode(tab.dataset.mode));
+  tab.addEventListener("click", () => {
+    setMode(tab.dataset.mode);
+    if (tab.dataset.mode === 'viz') pushNav('#/viz');
+    else if (tab.dataset.mode === 'scripture') pushNav('#/scripture');
+    else if (tab.dataset.mode === 'works') pushNav('#/works');
+  });
 
 // ── Sidebar rendering ─────────────────────────────────────────────────────────
 function renderSidebar(filter = "") {
@@ -264,6 +278,7 @@ async function showVerseView(bookSlug, chapter) {
   activeBook    = bookSlug;
   activeChapter = chapter;
   activeVerse   = null;
+  pushNav(`#/scripture/${bookSlug}/${chapter}`);
   setMode('scripture');
   renderSidebar(searchEl.value);
 
@@ -361,6 +376,7 @@ function renderVerseTable(bookData, chData, kjvChapter) {
 
 async function loadChapterFiltered(bookData, chData, verseKey, kjvChapter) {
   activeVerse = verseKey;
+  pushNav(`#/scripture/${activeBook}/${activeChapter}/${verseKey}`);
 
   verseViewEl.hidden   = true;
   chapterViewEl.hidden = false;
@@ -439,6 +455,7 @@ async function loadChapter(bookSlug, chapter) {
   activeBook    = bookSlug;
   activeChapter = chapter;
   activeVerse   = "all"; // special value: not null (verse table) but not a specific verse
+  pushNav(`#/scripture/${bookSlug}/${chapter}/all`);
   setMode('scripture');
   renderSidebar(searchEl.value);
 
@@ -619,6 +636,7 @@ worksSearchEl.addEventListener("input", () => renderWorksList(worksSearchEl.valu
 // ── Work loading ──────────────────────────────────────────────────────────────
 async function loadWork(workId) {
   activeWorkId = workId;
+  pushNav(`#/works/${workId}`);
   setMode('works');
   renderWorksList(worksSearchEl.value);
 
@@ -1564,6 +1582,53 @@ function buildCatLegend(allCats, colors) {
   return div;
 }
 
+// ── Hash restoration ──────────────────────────────────────────────────────────
+async function restoreFromHash(hash) {
+  _restoringFromHash = true;
+  try {
+    if (!hash || hash === '#' || hash === '#/viz') {
+      setMode('viz');
+      return;
+    }
+
+    const m = hash.slice(1); // strip leading #
+
+    if (m.startsWith('/scripture/')) {
+      const parts = m.slice('/scripture/'.length).split('/');
+      const slug    = parts[0];
+      const chapter = parseInt(parts[1], 10);
+      const verseKey = parts[2]; // undefined | 'all' | 'whole' | '<n>'
+
+      if (!slug || isNaN(chapter)) { setMode('scripture'); return; }
+
+      if (verseKey === 'all') {
+        await loadChapter(slug, chapter);
+      } else if (verseKey) {
+        // Show the verse table first so the UI has a back destination, then the filtered view
+        await showVerseView(slug, chapter);
+        const bookData    = bookCache.get(slug);
+        const kjvChapter  = kjvData?.[slug]?.[String(chapter)] ?? null;
+        const chData      = bookData?.chapters.find(c => c.ch === chapter);
+        if (chData) await loadChapterFiltered(bookData, chData, verseKey, kjvChapter);
+      } else {
+        await showVerseView(slug, chapter);
+      }
+    } else if (m.startsWith('/works/')) {
+      const workId = parseInt(m.slice('/works/'.length), 10);
+      if (!isNaN(workId)) await loadWork(workId);
+      else setMode('works');
+    } else if (m === '/works') {
+      setMode('works');
+    } else if (m === '/scripture') {
+      setMode('scripture');
+    } else {
+      setMode('viz');
+    }
+  } finally {
+    _restoringFromHash = false;
+  }
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 function dismissSpinner() {
   const el = document.getElementById('spinner-overlay');
@@ -1591,7 +1656,15 @@ async function init() {
   renderCategoryFilters();
   renderSidebar();
   renderWorksList();
-  setMode('viz');
+
+  window.addEventListener('popstate', () => restoreFromHash(location.hash));
+
+  if (location.hash && location.hash !== '#') {
+    await restoreFromHash(location.hash);
+  } else {
+    setMode('viz');
+  }
+
   passagesLoadPromise.then(dismissSpinner, dismissSpinner);
 }
 
