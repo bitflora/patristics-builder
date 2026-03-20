@@ -143,20 +143,48 @@ def _extract_metadata(root: etree._Element) -> dict:
     result["author_id"] = find_text("authorID")
     result["book_id"] = find_text("bookID")
 
-    # Year: prefer a DC.Date with sub="Published" or sub="Original";
-    # fall back to any DC.Date that contains a 4-digit year in the range 100–1999
+    # Year: prefer sub="Original"/"Written"/"Composed" (historical composition date);
+    # fall back to sub="Published" only if it looks like a historical print date (< 1970);
+    # ignore digitization dates (e.g. CCEL's 1999 "Published" dates).
+    year_candidates = []  # (priority, year)
     for el in root.iter():
         if _local(el.tag) != "DC.Date" or not el.text:
             continue
         year_m = re.search(r"\b(1\d{3}|[2-9]\d{2})\b", el.text)
-        if year_m:
-            candidate = int(year_m.group(1))
-            sub = el.get("sub", "").lower()
-            if sub in ("published", "original", "written", "composed"):
-                result["year"] = candidate
-                break
-            if result["year"] is None:
-                result["year"] = candidate
+        if not year_m:
+            continue
+        candidate = int(year_m.group(1))
+        sub = el.get("sub", "").lower()
+        if sub in ("original", "written", "composed"):
+            year_candidates.append((0, candidate))  # highest priority
+        elif sub in ("published", "created") and candidate < 1970:
+            year_candidates.append((1, candidate))  # plausible print/creation date
+        elif not sub and candidate < 1970:
+            year_candidates.append((2, candidate))  # untyped but historic
+    # Fallback: extract death year from DC.Creator file-as field, e.g.
+    # "Augustine, Saint, Bishop of Hippo (345-430)" → 430
+    # "Origen (c. 185-c. 254)" → 254
+    # Only used if no DC.Date candidate was found.
+    if not year_candidates:
+        for el in root.iter():
+            if _local(el.tag) != "DC.Creator":
+                continue
+            if el.get("sub", "").lower() != "author":
+                continue
+            if el.get("scheme", "").lower() != "file-as":
+                continue
+            text = (el.text or "").strip()
+            paren_m = re.search(r"\(([^)]+)\)", text)
+            if paren_m:
+                nums = re.findall(r"\d{3,4}", paren_m.group(1))
+                if nums:
+                    death_year = int(nums[-1])  # last number = death year
+                    if death_year < 2000:
+                        year_candidates.append((3, death_year))
+            break  # only use the first Author file-as entry
+
+    if year_candidates:
+        result["year"] = min(year_candidates, key=lambda x: x[0])[1]
 
     return result
 
@@ -193,6 +221,10 @@ class _TextBuilder:
             for child in el:
                 self.walk(child, in_skip=False)
         else:
+            # scripRef inside a note/footnote: anchor to the current prose
+            # offset (just before the note) — still a valid passage context.
+            if tag == "scripRef":
+                self.scripref_hits.append((el, self._offset))
             # Still recurse into children so their tails (belonging to this
             # skipped element) are also suppressed, but we must visit them to
             # handle deeply-nested tails correctly.
@@ -384,10 +416,19 @@ def _paths_from_manifest() -> list[Path]:
         entries = json.load(f)
     paths = []
     for entry in entries:
-        if entry.get("status") in ("downloaded", "cached") and entry.get("local_path"):
+        if entry.get("status") not in ("downloaded", "cached"):
+            continue
+        author_id = entry.get("author_id")
+        book_id = entry.get("book_id")
+        if author_id and book_id:
+            # Reconstruct path from IDs so Windows-origin local_path values work on Linux
+            p = CCEL_THML_DIR / author_id / f"{book_id}.xml"
+        elif entry.get("local_path"):
             p = Path(entry["local_path"])
-            if p.exists():
-                paths.append(p)
+        else:
+            continue
+        if p.exists():
+            paths.append(p)
     return paths
 
 

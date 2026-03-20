@@ -1415,7 +1415,7 @@ async function renderWormtrail(cats, version) {
 
   const desc = document.createElement('p');
   desc.className = 'viz-desc';
-  desc.textContent = `Flowing citation share of the top ${books.length} most-cited Bible books across ${BUCKET}-year periods. Stream width reflects citation volume. Click a stream to explore that book.`;
+  desc.textContent = `Citation share of the top ${books.length} most-cited Bible books across ${BUCKET}-year periods. Each column shows the proportional distribution of citations in that era. Click a stream to explore that book.`;
   sec.insertBefore(desc, sec.firstChild.nextSibling);
 
   // Per-bucket totals (for the shown books only)
@@ -1423,7 +1423,6 @@ async function renderWormtrail(cats, version) {
   const bucketTotals = bucketKeys.map(b =>
     books.reduce((s, bk) => s + (grid.get(bk.slug)?.get(b) || 0), 0)
   );
-  const maxTotal = Math.max(...bucketTotals, 1);
 
   const SVG_W = 680, SVG_H = 320;
   const PAD_L = 8, PAD_R = 8, PAD_T = 10, PAD_B = 24;
@@ -1431,19 +1430,23 @@ async function renderWormtrail(cats, version) {
   const PLOT_H = SVG_H - PAD_T - PAD_B;
   const centerY = PAD_T + PLOT_H / 2;
 
-  // X position for each bucket (spread evenly)
-  const xs = bucketKeys.map((_, i) =>
-    N === 1 ? PAD_L + PLOT_W / 2 : PAD_L + (i / (N - 1)) * PLOT_W
+  // X position for each bucket: proportional to actual year value
+  const minBucket = bucketKeys[0];
+  const maxBucket = bucketKeys[N - 1];
+  const xs = bucketKeys.map(b =>
+    N === 1 ? PAD_L + PLOT_W / 2 : PAD_L + ((b - minBucket) / (maxBucket - minBucket)) * PLOT_W
   );
 
-  // Silhouette layout: stack books, centered around centerY
-  // tops[bi][ci] = upper SVG y, bots[bi][ci] = lower SVG y
+  // Silhouette layout: normalize each bucket to fill the full plot height,
+  // so early-era works (few refs) are as visible as later high-volume eras.
+  // This shows citation *share* (which books dominate each period) rather
+  // than absolute volume.
   const tops = books.map(() => new Array(N).fill(0));
   const bots = books.map(() => new Array(N).fill(0));
   for (let ci = 0; ci < N; ci++) {
-    const total = bucketTotals[ci];
-    const scale = PLOT_H / maxTotal;
-    let y = centerY - (total * scale / 2);
+    const total = bucketTotals[ci] || 1;
+    const scale = PLOT_H / total;
+    let y = centerY - PLOT_H / 2;
     for (let bi = 0; bi < books.length; bi++) {
       const h = (grid.get(books[bi].slug)?.get(bucketKeys[ci]) || 0) * scale;
       tops[bi][ci] = y;
