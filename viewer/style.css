@@ -51,6 +51,26 @@ header {
 header h1 { font-size: 1.4rem; font-weight: normal; letter-spacing: .04em; }
 .subtitle { font-size: .85rem; opacity: .75; font-style: italic; }
 
+#sidebar-toggle {
+  display: none;
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: 1.3rem;
+  cursor: pointer;
+  padding: .1rem .3rem;
+  margin-left: auto;
+}
+
+#sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.35);
+  z-index: 99;
+}
+#sidebar-overlay.visible { display: block; }
+
 /* ── App layout ───────────────────────────────────────────────────────────── */
 #app {
   display: flex;
@@ -768,3 +788,42 @@ header h1 { font-size: 1.4rem; font-weight: normal; letter-spacing: .04em; }
   font-style: italic;
 }
 .ccel-link:hover { opacity: 1; text-decoration: underline; }
+
+/* ── Mobile ───────────────────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  #sidebar-toggle { display: block; }
+  #header-top { flex-wrap: wrap; gap: .3rem .6rem; }
+  .subtitle { width: 100%; font-size: .78rem; }
+  header { padding: .5rem .75rem .4rem; }
+
+  #sidebar {
+    position: fixed;
+    top: 0; left: 0; bottom: 0;
+    z-index: 100;
+    transform: translateX(-100%);
+    transition: transform .22s ease;
+    width: min(80vw, 280px);
+    overflow-y: auto;
+    background: var(--bg);
+  }
+  #sidebar.open { transform: translateX(0); }
+
+  #content-body { padding: .6rem .6rem; }
+
+  #mode-tabs { padding: 0 .4rem; }
+  .mode-tab { padding: .5rem .55rem; font-size: .8rem; }
+
+  .verse-num-cell   { width: 4rem;   padding: .4rem .35rem; font-size: .82rem; }
+  .verse-count-cell { width: 3.5rem; padding: .4rem .35rem; }
+  .verse-text-cell  { padding: .4rem .35rem; font-size: .8rem; }
+
+  #filter-bar, #work-filter-bar { width: 100%; }
+  #author-filter, #book-filter  { flex: 1; }
+
+  .viz-heatmap { grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 3px; }
+  .vbc-name  { font-size: .72rem; }
+  .vbc-count { font-size: .62rem; }
+
+  #category-filters { gap: .15rem .4rem; }
+  #category-filters label { font-size: .72rem; }
+}

@@ -67,6 +67,22 @@ const modeTabEls       = document.querySelectorAll(".mode-tab");
 // Visualizations mode DOM ref
 const vizViewEl        = document.getElementById("viz-view");
 
+// ── Mobile sidebar toggle ─────────────────────────────────────────────────────
+const toggleBtn = document.createElement('button');
+toggleBtn.id = 'sidebar-toggle';
+toggleBtn.setAttribute('aria-label', 'Toggle navigation');
+toggleBtn.textContent = '☰';
+document.querySelector('header').appendChild(toggleBtn);
+
+const sidebarOverlay = document.createElement('div');
+sidebarOverlay.id = 'sidebar-overlay';
+document.getElementById('app').prepend(sidebarOverlay);
+
+function openSidebar()  { sidebarEl.classList.add('open'); sidebarOverlay.classList.add('visible'); }
+function closeSidebar() { sidebarEl.classList.remove('open'); sidebarOverlay.classList.remove('visible'); }
+toggleBtn.addEventListener('click', () => sidebarEl.classList.contains('open') ? closeSidebar() : openSidebar());
+sidebarOverlay.addEventListener('click', closeSidebar);
+
 // ── Fetch helpers ─────────────────────────────────────────────────────────────
 async function fetchJSON(url) {
   const resp = await fetch(url);
@@ -859,6 +875,7 @@ function makeVizSection(title) {
 
 // Navigate from viz to a book — auto-loads the first chapter that has references
 function navigateToBook(slug) {
+  closeSidebar();
   const book = index.books.find(b => b.slug === slug);
   const cats = checkedCategories();
   const firstCh = book?.chapters.find(ch => filteredCount(ch, cats) > 0);
@@ -878,6 +895,7 @@ function navigateToBook(slug) {
 
 // Navigate from viz to a specific work in Works mode
 function navigateToWork(workId) {
+  closeSidebar();
   // Pre-set activeWorkId so setMode shows the work panel rather than the welcome screen
   activeWorkId = workId;
   setMode('works');   // Restores sidebar, hides viz panel
@@ -886,6 +904,7 @@ function navigateToWork(workId) {
 
 // Navigate from viz to a specific chapter
 function navigateToChapter(slug, ch) {
+  closeSidebar();
   activeBook = slug;
   activeChapter = ch;
   setMode('scripture');
@@ -928,7 +947,7 @@ function renderTopChaptersChart(cats) {
   const ROW_H = 28, LBL_W = 145, BAR_MAX = 380, SVG_W = LBL_W + BAR_MAX + 55;
   const SVG_H = top.length * ROW_H + 8;
 
-  let s = [`<svg class="viz-svg" viewBox="0 0 ${SVG_W} ${SVG_H}">`];
+  let s = [`<svg class="viz-svg" viewBox="0 0 ${SVG_W} ${SVG_H}" width="100%">`];
 
   for (let i = 0; i < top.length; i++) {
     const item = top[i];
@@ -1018,7 +1037,7 @@ function renderTopBooksChart(cats) {
   const ROW_H = 28, LBL_W = 145, BAR_MAX = 380, SVG_W = LBL_W + BAR_MAX + 55;
   const SVG_H = bookData.length * ROW_H + 8;
 
-  let s = [`<svg class="viz-svg" viewBox="0 0 ${SVG_W} ${SVG_H}">`];
+  let s = [`<svg class="viz-svg" viewBox="0 0 ${SVG_W} ${SVG_H}" width="100%">`];
 
   for (let i = 0; i < bookData.length; i++) {
     const book = bookData[i];
@@ -1087,7 +1106,7 @@ function renderWorksTimeline(cats) {
     const mag = Math.pow(10, Math.floor(Math.log10(rawStep)));
     const tickStep = [1, 2, 5, 10].map(n => n * mag).find(s => yearSpan / s <= 8 && yearSpan / s >= 2) || mag * 10;
 
-    let s = [`<svg class="viz-svg" viewBox="0 0 ${SVG_W} ${SVG_H}">`];
+    let s = [`<svg class="viz-svg" viewBox="0 0 ${SVG_W} ${SVG_H}" width="100%">`];
 
     // Alternating band backgrounds
     for (let i = 0; i < catList.length; i++) {
@@ -1296,7 +1315,7 @@ async function renderBibleRefsByDate(cats, version) {
   const BAR_GAP  = Math.max(1, Math.min(5, BAR_SLOT * 0.07));
   const BAR_W    = BAR_SLOT - BAR_GAP;
 
-  let s = [`<svg class="viz-svg" viewBox="0 0 ${SVG_W} ${SVG_H}">`];
+  let s = [`<svg class="viz-svg" viewBox="0 0 ${SVG_W} ${SVG_H}" width="100%">`];
 
   // Horizontal gridlines at 25 / 50 / 75 / 100 %
   for (const pct of [25, 50, 75, 100]) {
@@ -1497,7 +1516,7 @@ async function renderWormtrail(cats, version) {
     return d + ' Z';
   }
 
-  let s = [`<svg class="viz-svg" viewBox="0 0 ${SVG_W} ${SVG_H}" style="font-family:Georgia,serif">`];
+  let s = [`<svg class="viz-svg" viewBox="0 0 ${SVG_W} ${SVG_H}" width="100%" style="font-family:Georgia,serif">`];
 
   // Streams
   for (let bi = 0; bi < books.length; bi++) {
