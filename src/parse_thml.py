@@ -27,7 +27,8 @@ from lxml import etree
 sys.path.insert(0, str(Path(__file__).parent))
 
 from bible_data import BY_NAME, ABBREV_LOOKUP, BOOKS
-from db import get_connection, create_schema, delete_refs_for_manuscript, upsert_manuscript, DB_PATH
+from db import (get_connection, create_schema, delete_refs_for_manuscript,
+                delete_manuscripts_for_file, upsert_manuscript, DB_PATH)
 from parser import extract_passage_offsets, _normalize_creator
 from categorize import categorise_all
 
@@ -50,6 +51,57 @@ _SKIP_CONTENT_TAGS = frozenset({
 
 # Compiled once: matches numeric book prefix without a space, e.g. "1John" → "1 John"
 _NUM_PREFIX_RE = re.compile(r"^([1-4])([A-Za-z])")
+
+# Maps CCEL authorIDs found in ANF nested <ThML.head> blocks to (display_name, approx_year_CE).
+# Year is the approximate historical writing date; None if unknown or modern.
+ANF_AUTHOR_MAP: dict[str, tuple[str, int | None]] = {
+    "alexander_alexandria": ("Alexander of Alexandria",  312),
+    "alexander_capp":       ("Alexander of Cappadocia",  250),
+    "alexander_lyc":        ("Alexander of Lycopolis",   300),
+    "anatolius":            ("Anatolius of Laodicea",    270),
+    "anonymous":            ("Anonymous",                None),
+    "archelaus":            ("Archelaus of Carrhae",     278),
+    "aristides":            ("Aristides of Athens",      125),
+    "arnobius":             ("Arnobius of Sicca",        305),
+    "asterius":             ("Asterius of Cappadocia",   225),
+    "athenagoras":          ("Athenagoras of Athens",    177),
+    "caius":                ("Gaius of Rome",            200),
+    "clement_alex":         ("Clement of Alexandria",    200),
+    "clement_rome":         ("Clement of Rome",           96),
+    "commodianus":          ("Commodianus",              250),
+    "cyprian":              ("Cyprian of Carthage",      250),
+    "dionysius":            ("Dionysius of Alexandria",  265),
+    "felix":                ("Minucius Felix",           200),
+    "gregory_thau":         ("Gregory Thaumaturgus",     265),
+    "hermas":               ("Hermas",                   155),
+    "hippolytus":           ("Hippolytus of Rome",       215),
+    "ignatius":             ("Ignatius of Antioch",      107),
+    "irenaeus":             ("Irenaeus of Lyon",         180),
+    "juliusafricanus":      ("Julius Africanus",         225),
+    "justin_martyr":        ("Justin Martyr",            165),
+    "lactantius":           ("Lactantius",               313),
+    "malchion":             ("Malchion of Antioch",      268),
+    "mathetes":             ("Mathetes",                 130),
+    "methodius":            ("Methodius of Olympus",     311),
+    "novatian":             ("Novatian of Rome",         258),
+    "origen":               ("Origen of Alexandria",     250),
+    "pamphilus":            ("Pamphilus of Caesarea",    310),
+    "peter_alexandria":     ("Peter of Alexandria",      311),
+    "phileas":              ("Phileas of Thmuis",        306),
+    "pierus":               ("Pierius of Alexandria",    280),
+    "polycarp":             ("Polycarp of Smyrna",       155),
+    "rutherford_an":        ("W.G. Rutherford",          None),
+    "schaff":               ("Philip Schaff",            1885),
+    "tatian":               ("Tatian",                   175),
+    "tertullian":           ("Tertullian",               200),
+    "theodotus":            ("Theodotus of Byzantium",   200),
+    "theognostus":          ("Theognostus of Alexandria", 265),
+    "theonas":              ("Theonas of Alexandria",    300),
+    "theophilus":           ("Theophilus of Antioch",    180),
+    "venantius":            ("Venantius",                None),
+    "victorinus":           ("Victorinus of Pettau",     303),
+    "zosimus":              ("Zosimus of Panopolis",     300),
+}
 
 
 def _local(tag) -> str:
@@ -290,6 +342,156 @@ def _parse_parsed_attr(parsed: str) -> list[dict]:
     return results
 
 
+# ── ANF compilation parsing ───────────────────────────────────────────────────
+
+def _has_sub_works(root: etree._Element) -> bool:
+    """True if this document has 2+ <ThML.head> blocks with <authorID> children.
+    That pattern marks ANF compilation volumes containing works by multiple authors."""
+    count = 0
+    for el in root.iter():
+        if _local(el.tag) != "ThML.head":
+            continue
+        for child in el.iter():
+            if _local(child.tag) == "authorID" and child.text:
+                count += 1
+                break
+        if count > 1:
+            return True
+    return False
+
+
+def _parse_thml_subworks(
+    root: etree._Element,
+    builder: "_TextBuilder",
+    conn,
+    rel_filename: str,
+    ccel_url: str,
+    dry_run: bool,
+    verbose: bool,
+) -> int:
+    """Parse an ANF compilation: one manuscript record per nested <ThML.head>/authorID section.
+
+    Calls delete_manuscripts_for_file first for idempotency, then upserts one
+    manuscript per distinct author_id and inserts verse_refs under the right record.
+    """
+    clean_text = builder.text
+
+    # ── Pass 1: collect unique sections (author_id → title/name/year) ─────────
+    seen_authors: dict[str, int] = {}       # author_id → manuscript_id
+    author_info: dict[str, tuple[str, str, int | None]] = {}  # author_id → (title, display, year)
+
+    for el in root.iter():
+        if _local(el.tag) != "ThML.head":
+            continue
+        author_id_el = None
+        title_el = None
+        for child in el.iter():
+            clocal = _local(child.tag)
+            if clocal == "authorID" and child.text and author_id_el is None:
+                author_id_el = child
+            elif clocal == "DC.Title" and child.text and title_el is None:
+                title_el = child
+        if author_id_el is None or not author_id_el.text:
+            continue
+        author_id = author_id_el.text.strip()
+        if author_id in author_info:
+            continue  # same author in multiple sections → one record
+        title_text = title_el.text.strip() if title_el is not None else None
+        display_name, year = ANF_AUTHOR_MAP.get(author_id, (author_id, None))
+        author_info[author_id] = (title_text or display_name, display_name, year)
+
+    print(f"  Compilation: {len(author_info)} authors — "
+          + ", ".join(author_info[a][1] for a in author_info))
+
+    if not dry_run:
+        delete_manuscripts_for_file(conn, rel_filename)
+        for author_id, (title, display_name, year) in author_info.items():
+            ms_id = upsert_manuscript(
+                conn, rel_filename,
+                work_key=author_id,
+                author=display_name,
+                title=title,
+                year=year,
+                ccel_url=ccel_url,
+                category="Other",
+                source_format="thml",
+            )
+            seen_authors[author_id] = ms_id
+
+    # ── Pass 2: assign each scripRef to its section author ────────────────────
+    ref_ids = {id(el) for el, _ in builder.scripref_hits}
+    assignment: dict[int, str | None] = {}   # id(el) → author_id
+    current_author_id: str | None = None
+
+    for el in root.iter():
+        local = _local(el.tag)
+        if local == "ThML.head":
+            for child in el.iter():
+                if _local(child.tag) == "authorID" and child.text:
+                    current_author_id = child.text.strip()
+                    break
+        elif id(el) in ref_ids:
+            assignment[id(el)] = current_author_id
+
+    # ── Pass 3: build and insert rows ─────────────────────────────────────────
+    rows: list[tuple] = []
+
+    for el, cite_offset in builder.scripref_hits:
+        parsed_attr = el.get("parsed")
+        if not parsed_attr:
+            continue
+        author_id = assignment.get(id(el))
+        if not author_id or author_id not in author_info:
+            continue
+        ms_id = seen_authors.get(author_id, 0) if not dry_run else 0
+
+        citations = _parse_parsed_attr(parsed_attr)
+        if not citations:
+            continue
+
+        passage_start, passage_end = extract_passage_offsets(clean_text, cite_offset)
+        ccel_anchor = el.get("id") or None
+
+        for cit in citations:
+            be = cit["book_entry"]
+            if verbose or dry_run:
+                display_name = author_info[author_id][1]
+                ref_str = f"{be['name']} {cit['chapter']}"
+                if cit["verse_start"]:
+                    ref_str += f":{cit['verse_start']}"
+                    if cit["verse_end"]:
+                        ref_str += f"-{cit['verse_end']}"
+                preview = clean_text[passage_start:passage_start + 80].replace("\n", " ")
+                print(f"  [{display_name}] {ref_str:30s}  …{preview}…")
+            rows.append((
+                ms_id,
+                be["name"],
+                be["slug"],
+                cit["chapter"],
+                cit["verse_start"],
+                cit["verse_end"],
+                cite_offset,
+                passage_start,
+                passage_end,
+                ccel_anchor,
+            ))
+
+    if not dry_run and rows:
+        conn.executemany(
+            """INSERT INTO verse_refs
+               (manuscript_id, book, book_slug, chapter,
+                verse_start, verse_end,
+                citation_offset, passage_start_offset, passage_end_offset,
+                ccel_anchor)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
+        conn.commit()
+
+    print(f"  -> {len(rows)} citation rows (across {len(author_info)} authors)")
+    return len(rows)
+
+
 # ── Per-file parsing ──────────────────────────────────────────────────────────
 
 def parse_thml_file(
@@ -337,6 +539,10 @@ def parse_thml_file(
     # Save clean text file (builder uses this via stored offsets)
     if not dry_run:
         txt_path.write_text(clean_text, encoding="utf-8")
+
+    # ANF compilation volumes: delegate to sub-works parser
+    if _has_sub_works(root):
+        return _parse_thml_subworks(root, builder, conn, rel_filename, ccel_url, dry_run, verbose)
 
     if not dry_run:
         # Conflict resolution: if a txt-sourced row exists for this ccel_url,
@@ -471,7 +677,7 @@ def main() -> None:
     conn = get_connection()
 
     if args.files:
-        paths = [Path(f) for f in args.files]
+        paths = [Path(f).resolve() for f in args.files]
     else:
         paths = _paths_from_manifest()
 

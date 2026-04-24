@@ -21,13 +21,16 @@ def create_schema(db_path: Path = DB_PATH) -> None:
     with conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS manuscripts (
-                id       INTEGER PRIMARY KEY,
-                filename TEXT NOT NULL UNIQUE,
-                author   TEXT,
-                title    TEXT,
-                year     INTEGER,
-                ccel_url TEXT,
-                category TEXT
+                id        INTEGER PRIMARY KEY,
+                filename  TEXT NOT NULL,
+                work_key  TEXT NOT NULL DEFAULT '',
+                author    TEXT,
+                title     TEXT,
+                year      INTEGER,
+                ccel_url  TEXT,
+                category  TEXT,
+                source_format TEXT NOT NULL DEFAULT 'txt',
+                UNIQUE (filename, work_key)
             );
 
             CREATE TABLE IF NOT EXISTS verse_refs (
@@ -50,8 +53,8 @@ def create_schema(db_path: Path = DB_PATH) -> None:
             CREATE INDEX IF NOT EXISTS idx_refs_manuscript
                 ON verse_refs(manuscript_id);
         """)
-        # Migration: add source_format column if absent (existing rows default to 'txt')
         cols = {row[1] for row in conn.execute("PRAGMA table_info(manuscripts)")}
+        # Migration: add source_format column if absent (existing rows default to 'txt')
         if "source_format" not in cols:
             conn.execute(
                 "ALTER TABLE manuscripts ADD COLUMN source_format TEXT NOT NULL DEFAULT 'txt'"
@@ -60,17 +63,41 @@ def create_schema(db_path: Path = DB_PATH) -> None:
         ref_cols = {row[1] for row in conn.execute("PRAGMA table_info(verse_refs)")}
         if "ccel_anchor" not in ref_cols:
             conn.execute("ALTER TABLE verse_refs ADD COLUMN ccel_anchor TEXT")
+        # Migration: replace UNIQUE(filename) with UNIQUE(filename, work_key)
+        if "work_key" not in cols:
+            conn.executescript("""
+                PRAGMA foreign_keys = OFF;
+                CREATE TABLE manuscripts_new (
+                    id            INTEGER PRIMARY KEY,
+                    filename      TEXT NOT NULL,
+                    work_key      TEXT NOT NULL DEFAULT '',
+                    author        TEXT,
+                    title         TEXT,
+                    year          INTEGER,
+                    ccel_url      TEXT,
+                    category      TEXT,
+                    source_format TEXT NOT NULL DEFAULT 'txt',
+                    UNIQUE (filename, work_key)
+                );
+                INSERT INTO manuscripts_new
+                    SELECT id, filename, '', author, title, year, ccel_url, category,
+                           source_format
+                    FROM manuscripts;
+                DROP TABLE manuscripts;
+                ALTER TABLE manuscripts_new RENAME TO manuscripts;
+                PRAGMA foreign_keys = ON;
+            """)
     conn.close()
     print(f"Schema created at {db_path}")
 
 
-def upsert_manuscript(conn: sqlite3.Connection, filename: str, author: str | None = None,
-                       title: str | None = None, year: int | None = None,
-                       ccel_url: str | None = None, category: str | None = None,
-                       source_format: str = "txt") -> int:
+def upsert_manuscript(conn: sqlite3.Connection, filename: str, work_key: str = "",
+                       author: str | None = None, title: str | None = None,
+                       year: int | None = None, ccel_url: str | None = None,
+                       category: str | None = None, source_format: str = "txt") -> int:
     """Insert or update a manuscript record, returning its id."""
     cur = conn.execute(
-        "SELECT id FROM manuscripts WHERE filename = ?", (filename,)
+        "SELECT id FROM manuscripts WHERE filename = ? AND work_key = ?", (filename, work_key)
     )
     row = cur.fetchone()
     if row:
@@ -81,9 +108,10 @@ def upsert_manuscript(conn: sqlite3.Connection, filename: str, author: str | Non
         )
         return row["id"]
     cur = conn.execute(
-        """INSERT INTO manuscripts (filename, author, title, year, ccel_url, category, source_format)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (filename, author, title, year, ccel_url, category, source_format)
+        """INSERT INTO manuscripts (filename, work_key, author, title, year, ccel_url,
+               category, source_format)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (filename, work_key, author, title, year, ccel_url, category, source_format)
     )
     return cur.lastrowid
 
@@ -91,6 +119,16 @@ def upsert_manuscript(conn: sqlite3.Connection, filename: str, author: str | Non
 def delete_refs_for_manuscript(conn: sqlite3.Connection, manuscript_id: int) -> None:
     """Remove all verse_refs for a manuscript so it can be re-parsed cleanly."""
     conn.execute("DELETE FROM verse_refs WHERE manuscript_id = ?", (manuscript_id,))
+
+
+def delete_manuscripts_for_file(conn: sqlite3.Connection, filename: str) -> None:
+    """Delete all manuscript records (and their refs) sharing the same filename."""
+    rows = conn.execute(
+        "SELECT id FROM manuscripts WHERE filename = ?", (filename,)
+    ).fetchall()
+    for row in rows:
+        conn.execute("DELETE FROM verse_refs WHERE manuscript_id = ?", (row["id"],))
+    conn.execute("DELETE FROM manuscripts WHERE filename = ?", (filename,))
 
 
 if __name__ == "__main__":
