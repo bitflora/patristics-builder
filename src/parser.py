@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from bible_data import ABBREV_LOOKUP, ABBREV_LIST, roman_to_int, is_roman, BOOKS
 from db import get_connection, create_schema, upsert_manuscript, delete_refs_for_manuscript, DB_PATH
+from categorize import categorise_all
 
 MANUSCRIPTS_DIR = Path(__file__).parent.parent / "manuscripts"
 
@@ -593,6 +594,10 @@ def main() -> None:
         show_stats(conn)
 
     conn.close()
+
+    if not args.dry_run:
+        print("\nRunning categorize...")
+        categorise_all()
 
 
 if __name__ == "__main__":

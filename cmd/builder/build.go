@@ -19,9 +19,10 @@ var multiBlankRe = regexp.MustCompile(`\n{3,}`)
 
 // bookRef is a single citation record within a book file.
 type bookRef struct {
-	V *string `json:"v"`  // verse label, nil for chapter-level refs → JSON null
-	W int64   `json:"w"`  // manuscript ID (look up in index.works)
-	P string  `json:"p"`  // key into passages.json.zst (e.g. "confessions_1234_5678")
+	V  *string `json:"v"`            // verse label, nil for chapter-level refs → JSON null
+	W  int64   `json:"w"`            // manuscript ID (look up in index.works)
+	P  string  `json:"p"`            // key into passages.json.zst (e.g. "confessions_1234_5678")
+	Ca *string `json:"ca,omitempty"` // ThML scripRef id for CCEL chapter anchor (e.g. "ii-p6.1")
 }
 
 // bookChapter holds all refs for one chapter within a book file.
@@ -269,7 +270,8 @@ func buildBook(db *sql.DB, cache map[string][]rune, bookSlug string, gp *GlobalP
 			vr.verse_start, vr.verse_end,
 			vr.citation_offset,
 			m.id AS manuscript_id,
-			m.filename
+			m.filename,
+			vr.ccel_anchor
 		FROM verse_refs vr
 		JOIN manuscripts m ON m.id = vr.manuscript_id
 		WHERE vr.book_slug = ?
@@ -292,9 +294,10 @@ func buildBook(db *sql.DB, cache map[string][]rune, bookSlug string, gp *GlobalP
 		var citationOffset int64
 		var mID int64
 		var filename string
+		var ccelAnchor sql.NullString
 
 		if err := rows.Scan(&chapter, &verseStart, &verseEnd, &citationOffset,
-			&mID, &filename); err != nil {
+			&mID, &filename, &ccelAnchor); err != nil {
 			log.Printf("scanning ref row for %s: %v", bookSlug, err)
 			continue
 		}
@@ -307,9 +310,10 @@ func buildBook(db *sql.DB, cache map[string][]rune, bookSlug string, gp *GlobalP
 		key := gp.intern(cache, filename, int(citationOffset))
 
 		chapterMap[chapter] = append(chapterMap[chapter], bookRef{
-			V: verseLabel(verseStart, verseEnd),
-			W: mID,
-			P: key,
+			V:  verseLabel(verseStart, verseEnd),
+			W:  mID,
+			P:  key,
+			Ca: nullStringPtr(ccelAnchor),
 		})
 	}
 
@@ -409,7 +413,8 @@ func buildWorks(db *sql.DB, cache map[string][]rune, gp *GlobalPassages) {
 		BookSlug string  `json:"book_slug"`
 		Chapter  int     `json:"chapter"`
 		V        *string `json:"v"`
-		P        string  `json:"p"` // key into passages.json.zst
+		P        string  `json:"p"`            // key into passages.json.zst
+		Ca       *string `json:"ca,omitempty"` // ThML scripRef id for CCEL chapter anchor
 	}
 	type workPayload struct {
 		ID      int64     `json:"id"`
@@ -425,7 +430,7 @@ func buildWorks(db *sql.DB, cache map[string][]rune, gp *GlobalPassages) {
 		refRows, err := db.Query(`
 			SELECT vr.book, vr.book_slug, vr.chapter,
 			       vr.verse_start, vr.verse_end,
-			       vr.citation_offset
+			       vr.citation_offset, vr.ccel_anchor
 			FROM verse_refs vr
 			WHERE vr.manuscript_id = ?
 			ORDER BY vr.book_slug, vr.chapter, vr.verse_start NULLS LAST
@@ -441,9 +446,10 @@ func buildWorks(db *sql.DB, cache map[string][]rune, gp *GlobalPassages) {
 			var chapter int
 			var verseStart, verseEnd sql.NullInt64
 			var citationOffset int
+			var ccelAnchor sql.NullString
 
 			if err := refRows.Scan(&book, &bookSlug, &chapter,
-				&verseStart, &verseEnd, &citationOffset); err != nil {
+				&verseStart, &verseEnd, &citationOffset, &ccelAnchor); err != nil {
 				log.Printf("scanning ref for manuscript %d: %v", m.id, err)
 				continue
 			}
@@ -456,6 +462,7 @@ func buildWorks(db *sql.DB, cache map[string][]rune, gp *GlobalPassages) {
 				Chapter:  chapter,
 				V:        verseLabel(verseStart, verseEnd),
 				P:        key,
+				Ca:       nullStringPtr(ccelAnchor),
 			})
 		}
 		refRows.Close()

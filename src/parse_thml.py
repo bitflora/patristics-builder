@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from bible_data import BY_NAME, ABBREV_LOOKUP, BOOKS
 from db import get_connection, create_schema, delete_refs_for_manuscript, upsert_manuscript, DB_PATH
 from parser import extract_passage_offsets, _normalize_creator
+from categorize import categorise_all
 
 PROJECT_ROOT = Path(__file__).parent.parent
 CCEL_THML_DIR = PROJECT_ROOT / "manuscripts" / "ccel_thml"
@@ -367,6 +368,7 @@ def parse_thml_file(
             continue
 
         passage_start, passage_end = extract_passage_offsets(clean_text, cite_offset)
+        ccel_anchor = el.get("id") or None
 
         for cit in citations:
             be = cit["book_entry"]
@@ -389,6 +391,7 @@ def parse_thml_file(
                 cite_offset,
                 passage_start,
                 passage_end,
+                ccel_anchor,
             ))
 
     if not dry_run and rows:
@@ -396,8 +399,9 @@ def parse_thml_file(
             """INSERT INTO verse_refs
                (manuscript_id, book, book_slug, chapter,
                 verse_start, verse_end,
-                citation_offset, passage_start_offset, passage_end_offset)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                citation_offset, passage_start_offset, passage_end_offset,
+                ccel_anchor)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             rows,
         )
         conn.commit()
@@ -484,6 +488,10 @@ def main() -> None:
         show_stats(conn)
 
     conn.close()
+
+    if not args.dry_run:
+        print("\nRunning categorize...")
+        categorise_all()
 
 
 if __name__ == "__main__":

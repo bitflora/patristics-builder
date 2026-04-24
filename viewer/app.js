@@ -97,6 +97,19 @@ async function fetchJSON(url) {
   return resp.json();
 }
 
+// ── CCEL URL helpers ──────────────────────────────────────────────────────────
+
+// Build a chapter-level CCEL URL with an anchor pointing to the exact citation.
+// ccelUrl: e.g. "https://ccel.org/ccel/adeney/expositoreznehes"
+// anchor:  ThML scripRef id, e.g. "ii-p6.1" (null/undefined = fall back to work root)
+function ccelPageUrl(ccelUrl, anchor) {
+  if (!ccelUrl) return null;
+  if (!anchor) return ccelUrl;
+  const bookId = ccelUrl.split('/').pop();
+  const divId  = anchor.split('-p')[0];
+  return `${ccelUrl}/${bookId}.${divId}.html#fnf_${anchor}`;
+}
+
 // ── Heatmap ───────────────────────────────────────────────────────────────────
 function heatLevel(count, max) {
   if (count === 0) return 0;
@@ -447,8 +460,9 @@ async function loadChapterFiltered(bookData, chData, verseKey, kjvChapter) {
       : `<span class="ref-verse-tag">whole chapter</span>`;
 
     const yearStr = work.year ? ` (${work.year})` : "";
-    const ccelLink = work.ccel_url
-      ? ` <a href="${esc(work.ccel_url)}" target="_blank" rel="noopener" class="ccel-link">View on CCEL ↗</a>`
+    const pageUrl = ccelPageUrl(work.ccel_url, ref.ca);
+    const ccelLink = pageUrl
+      ? ` <a href="${esc(pageUrl)}" target="_blank" rel="noopener" class="ccel-link">View on CCEL ↗</a>`
       : "";
 
     card.innerHTML = `
@@ -533,8 +547,9 @@ function renderChapter(bookData, chData) {
       : `<span class="ref-verse-tag">whole chapter</span>`;
 
     const yearStr = work.year ? ` (${work.year})` : "";
-    const ccelLink = work.ccel_url
-      ? ` <a href="${esc(work.ccel_url)}" target="_blank" rel="noopener" class="ccel-link">View on CCEL ↗</a>`
+    const pageUrl = ccelPageUrl(work.ccel_url, ref.ca);
+    const ccelLink = pageUrl
+      ? ` <a href="${esc(pageUrl)}" target="_blank" rel="noopener" class="ccel-link">View on CCEL ↗</a>`
       : "";
 
     card.innerHTML = `

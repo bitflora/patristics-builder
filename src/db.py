@@ -40,7 +40,8 @@ def create_schema(db_path: Path = DB_PATH) -> None:
                 verse_end            INTEGER,
                 citation_offset      INTEGER NOT NULL,
                 passage_start_offset INTEGER NOT NULL,
-                passage_end_offset   INTEGER NOT NULL
+                passage_end_offset   INTEGER NOT NULL,
+                ccel_anchor          TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_refs_book_chapter
@@ -55,6 +56,10 @@ def create_schema(db_path: Path = DB_PATH) -> None:
             conn.execute(
                 "ALTER TABLE manuscripts ADD COLUMN source_format TEXT NOT NULL DEFAULT 'txt'"
             )
+        # Migration: add ccel_anchor column if absent
+        ref_cols = {row[1] for row in conn.execute("PRAGMA table_info(verse_refs)")}
+        if "ccel_anchor" not in ref_cols:
+            conn.execute("ALTER TABLE verse_refs ADD COLUMN ccel_anchor TEXT")
     conn.close()
     print(f"Schema created at {db_path}")
 
