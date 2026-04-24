@@ -101,6 +101,31 @@ ANF_AUTHOR_MAP: dict[str, tuple[str, int | None]] = {
     "venantius":            ("Venantius",                None),
     "victorinus":           ("Victorinus of Pettau",     303),
     "zosimus":              ("Zosimus of Panopolis",     300),
+    # NPNF Series 1 & 2 authors
+    "augustine":            ("Augustine of Hippo",       400),
+    "chrysostom":           ("John Chrysostom",          400),
+    "eusebius":             ("Eusebius of Caesarea",     313),
+    "socrates":             ("Socrates Scholasticus",    439),
+    "sozomen":              ("Sozomen",                  440),
+    "theodoret":            ("Theodoret of Cyrrhus",     450),
+    "jerome":               ("Jerome of Stridon",        420),
+    "gennadius":            ("Gennadius of Marseilles",  495),
+    "rufinus":              ("Rufinus of Aquileia",      411),
+    "athanasius":           ("Athanasius of Alexandria", 373),
+    "gregorynyssa":         ("Gregory of Nyssa",         394),
+    "cyril_jer":            ("Cyril of Jerusalem",       386),
+    "gregory_naz":          ("Gregory Nazianzen",        390),
+    "basil":                ("Basil of Caesarea",        379),
+    "hilary_poit":          ("Hilary of Poitiers",       368),
+    "damascus":             ("John of Damascus",         749),
+    "ambrose":              ("Ambrose of Milan",         397),
+    "sulpiciusseverus":     ("Sulpicius Severus",        420),
+    "vincent_lerins":       ("Vincent of Lérins",        445),
+    "cassian":              ("John Cassian",             435),
+    "leo":                  ("Leo the Great",            461),
+    "gregory":              ("Gregory the Great",        604),
+    "ephraim":              ("Ephrem the Syrian",        373),
+    "aphrahat":             ("Aphrahat",                 345),
 }
 
 
@@ -189,9 +214,35 @@ def _extract_metadata(root: etree._Element) -> dict:
     if raw_title:
         result["title"] = raw_title
 
-    raw_creator = find_text("DC.Creator")
-    if raw_creator:
-        result["author"] = _normalize_creator(raw_creator)
+    # Prefer DC.Creator sub="Author" (actual author) over sub="Editor" (compiler/translator).
+    # CCEL IDs (scheme="ccel") are mapped via ANF_AUTHOR_MAP; short-form display names used directly.
+    # Multi-author volumes (e.g. npnf202 Socrates+Sozomen) produce joined names.
+    # TODO: split multi-author NPNF volumes into sub-works (like ANF) once div1-based
+    #       section boundaries are mapped per volume.
+    author_ccel_ids: list[str] = []
+    author_short_forms: list[str] = []
+    for el in root.iter():
+        if _local(el.tag) != "DC.Creator" or not el.text:
+            continue
+        sub = el.get("sub", "").lower()
+        scheme = el.get("scheme", "").lower()
+        if sub == "author":
+            if scheme == "ccel":
+                author_ccel_ids.append(el.text.strip())
+            elif scheme == "short-form":
+                author_short_forms.append(el.text.strip())
+
+    if author_ccel_ids:
+        display_names = [ANF_AUTHOR_MAP[a][0] if a in ANF_AUTHOR_MAP
+                         else _normalize_creator(a)
+                         for a in author_ccel_ids]
+        result["author"] = ", ".join(display_names)
+    elif author_short_forms:
+        result["author"] = ", ".join(author_short_forms)
+    else:
+        raw_creator = find_text("DC.Creator")
+        if raw_creator:
+            result["author"] = _normalize_creator(raw_creator)
 
     result["author_id"] = find_text("authorID")
     result["book_id"] = find_text("bookID")
