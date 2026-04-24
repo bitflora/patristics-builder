@@ -736,11 +736,16 @@ function renderWork(data) {
       ? `<span class="ref-verse-tag">${esc(ref.book)} ${ref.chapter}:${esc(ref.v)}</span>`
       : `<span class="ref-verse-tag">${esc(ref.book)} ${ref.chapter}</span>`;
 
+    const pageUrl = ccelPageUrl(data.ccel_url, ref.ca);
+    const ccelLink = pageUrl
+      ? ` <a href="${esc(pageUrl)}" target="_blank" rel="noopener" class="ccel-link">View on CCEL ↗</a>`
+      : "";
+
     card.innerHTML = `
       <div class="ref-meta">
         <div>
           <span class="ref-author">${esc(data.author)}</span>
-          <span class="ref-work"> — ${esc(data.title)}</span>
+          <span class="ref-work"> — ${esc(data.title)}</span>${ccelLink}
         </div>
         ${locTag}
       </div>
