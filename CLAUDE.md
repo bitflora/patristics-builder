@@ -24,6 +24,14 @@ python src/categorize.py           # Categorize manuscripts by subject
 python src/cleanup.py              # Data cleanup and normalization
 ```
 
+### Verse lookup (for Claude Code)
+```bash
+python src/verse_query.py stats "John 1:14"      # who cites it, when, density breakdown
+python src/verse_query.py passages "John 1:14" --sample stratified --max-density 5
+python src/verse_query.py context <ref_id>       # wide window around one citation
+```
+Read-only, stdlib only. The `verse-commentary` skill (`.claude/skills/verse-commentary/`) drives it to summarize how a verse is quoted.
+
 ### Viewer (local dev)
 ```bash
 python -m http.server 8000 --directory .
