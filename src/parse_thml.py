@@ -90,7 +90,7 @@ ANF_AUTHOR_MAP: dict[str, tuple[str, int | None]] = {
     "phileas":              ("Phileas of Thmuis",        306),
     "pierus":               ("Pierius of Alexandria",    280),
     "polycarp":             ("Polycarp of Smyrna",       155),
-    "rutherford_an":        ("W.G. Rutherford",          None),
+    "rutherford_an":        ("W.G. Rutherford",          180),   # translator; Passion of the Scillitan Martyrs
     "schaff":               ("Philip Schaff",            1885),
     "tatian":               ("Tatian",                   175),
     "tertullian":           ("Tertullian",               200),
@@ -98,7 +98,7 @@ ANF_AUTHOR_MAP: dict[str, tuple[str, int | None]] = {
     "theognostus":          ("Theognostus of Alexandria", 265),
     "theonas":              ("Theonas of Alexandria",    300),
     "theophilus":           ("Theophilus of Antioch",    180),
-    "venantius":            ("Venantius",                None),
+    "venantius":            ("Venantius",                580),
     "victorinus":           ("Victorinus of Pettau",     303),
     "zosimus":              ("Zosimus of Panopolis",     300),
     # NPNF Series 1 & 2 authors
@@ -286,6 +286,14 @@ def _extract_metadata(root: etree._Element) -> dict:
                     if death_year < 2000:
                         year_candidates.append((3, death_year))
             break  # only use the first Author file-as entry
+
+    # Last resort: the known author's approximate writing date (e.g. NPNF volumes,
+    # whose headers carry only CCEL's digitization date).
+    if not year_candidates:
+        for a in author_ccel_ids:
+            if a in ANF_AUTHOR_MAP and ANF_AUTHOR_MAP[a][1] is not None:
+                year_candidates.append((4, ANF_AUTHOR_MAP[a][1]))
+                break
 
     if year_candidates:
         result["year"] = min(year_candidates, key=lambda x: x[0])[1]
