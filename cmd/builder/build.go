@@ -64,10 +64,12 @@ func (gp *GlobalPassages) intern(cache map[string][]rune, filename string, citat
 		start, end = citationOffset, citationOffset
 	} else {
 		start, end = expandToSentences(runes, citationOffset, 2, 3)
-		// Cap the extraction range before allocating a string to avoid
-		// scanning to end-of-file when sentence punctuation is sparse.
+		// Cap the extraction range around the citation, not from start: when
+		// punctuation is sparse, start can sit far enough back that capping
+		// from it would cut the cited text off entirely.
 		if end-start > maxPassageChars {
-			end = start + maxPassageChars
+			start = max(start, citationOffset-maxPassageChars/2)
+			end = min(end, start+maxPassageChars)
 		}
 		raw := strings.TrimSpace(string(runes[start:end]))
 		raw = multiBlankRe.ReplaceAllString(raw, "\n\n")
@@ -206,8 +208,13 @@ func expandToSentences(runes []rune, citationOffset, numBefore, numAfter int) (i
 	if citationOffset > n {
 		citationOffset = n
 	}
-	start := findSentenceStartBefore(runes, citationOffset, numBefore)
-	end := findSentenceEndAfter(runes, citationOffset, numAfter)
+	// Anything further than maxPassageChars from the citation is clipped
+	// anyway; bounding the scans keeps sparse-punctuation texts (e.g. Nave's
+	// reference lists) from being walked end to end for every citation.
+	floor := max(0, citationOffset-maxPassageChars)
+	ceil := min(n, citationOffset+maxPassageChars)
+	start := floor + findSentenceStartBefore(runes[floor:], citationOffset-floor, numBefore)
+	end := findSentenceEndAfter(runes[:ceil], citationOffset, numAfter)
 	return start, end
 }
 

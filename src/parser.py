@@ -16,6 +16,7 @@ By default any manuscript whose ccel_url is already sourced from ThML is skipped
 from __future__ import annotations
 
 import argparse
+import bisect
 import re
 import sys
 from pathlib import Path
@@ -23,8 +24,10 @@ from pathlib import Path
 # Allow running from project root or src/
 sys.path.insert(0, str(Path(__file__).parent))
 
-from bible_data import ABBREV_LOOKUP, ABBREV_LIST, roman_to_int, is_roman, BOOKS
-from db import get_connection, create_schema, upsert_manuscript, delete_refs_for_manuscript, DB_PATH
+from bible_data import (ABBREV_LOOKUP, ABBREV_LIST, roman_to_int, is_roman, BOOKS,
+                        remap_versification, validate_ref)
+from db import (get_connection, create_schema, upsert_manuscript, delete_refs_for_manuscript,
+                delete_manuscripts_for_file, DB_PATH)
 from categorize import categorise_all
 
 MANUSCRIPTS_DIR = Path(__file__).parent.parent / "manuscripts"
@@ -146,43 +149,50 @@ _SENT_SPLIT_RE = re.compile(
 )
 
 
+_LAST_WORD_RE = re.compile(r'(\w+)\s*[.!?]["\'\)]*$')
+
+# Sentence fragments shorter than this are merged into the previous sentence.
+_MIN_SENTENCE_CHARS = 10
+
+
+def _sentence_spans(text: str, start: int = 0, end: int | None = None) -> list[tuple[int, int]]:
+    """
+    Split text[start:end] into sentences, returned as (start, end) offsets into
+    *text* with surrounding whitespace excluded. Working in offsets (rather than
+    re-finding sentence strings afterwards) keeps every span exact.
+    """
+    if end is None:
+        end = len(text)
+    spans: list[tuple[int, int]] = []
+    sent_start = start
+    for m in _SENT_SPLIT_RE.finditer(text, start, end):
+        # Don't break after an abbreviation ("Matt. V. 3", "St. John")
+        tail = text[max(sent_start, m.start() - 40):m.end(1)]
+        last_word_m = _LAST_WORD_RE.search(tail)
+        if last_word_m and last_word_m.group(1).lower() in _ABBREV_ENDINGS:
+            continue
+        spans.append((sent_start, m.end(1)))
+        sent_start = m.end()
+    spans.append((sent_start, end))
+
+    result: list[tuple[int, int]] = []
+    for s, e in spans:
+        while s < e and text[s].isspace():
+            s += 1
+        while e > s and text[e - 1].isspace():
+            e -= 1
+        if s == e:
+            continue
+        if result and e - s < _MIN_SENTENCE_CHARS:
+            result[-1] = (result[-1][0], e)  # likely a bad split; re-join
+        else:
+            result.append((s, e))
+    return result
+
+
 def split_sentences(text: str) -> list[str]:
     """Split text into sentences using a simple heuristic."""
-    # Use findall to get the split points, then reconstruct
-    parts = _SENT_SPLIT_RE.split(text)
-    # parts alternates: [text, punct, text, punct, ...]
-    sentences: list[str] = []
-    buf = ""
-    i = 0
-    while i < len(parts):
-        chunk = parts[i]
-        punct = parts[i + 1] if i + 1 < len(parts) else ""
-        buf += chunk + punct
-        i += 2
-
-        # Decide whether to break here
-        # Check the last word before the punctuation (potential abbreviation)
-        last_word_m = re.search(r'(\w+)\s*[.!?]["\'\)]*$', buf.rstrip())
-        last_word = last_word_m.group(1).lower() if last_word_m else ""
-
-        if punct and last_word not in _ABBREV_ENDINGS:
-            sentences.append(buf.strip())
-            buf = ""
-
-    if buf.strip():
-        sentences.append(buf.strip())
-
-    # Remove empty and re-join very short fragments (< 10 chars, likely bad splits)
-    result: list[str] = []
-    for sent in sentences:
-        sent = sent.strip()
-        if not sent:
-            continue
-        if result and len(sent) < 10:
-            result[-1] += " " + sent
-        else:
-            result.append(sent)
-    return result
+    return [text[s:e] for s, e in _sentence_spans(text)]
 
 
 # ── Citation regex ────────────────────────────────────────────────────────────
@@ -216,8 +226,10 @@ def _build_citation_re() -> re.Pattern:
     # Chapter: Roman or Arabic numerals
     ch_pat = r'(?:[ivxlcdmIVXLCDM]+|\d+)'
 
-    # Verse: one or more digits, optional range/list
-    verse_pat = r'(?:\d+(?:\s*[-–]\s*\d+)?(?:\s*,\s*\d+)*)'
+    # Verse: one or more digits, optional range/list. A list item followed by a
+    # capitalised word is the numeric prefix of the next citation's book
+    # ("Rom. viii. 13, 1 Cor. ii. 3"), so it is left for that citation.
+    verse_pat = r'(?:\d+(?:\s*[-–]\s*\d+)?(?:\s*,\s*\d+(?!\d)(?!\s*(?-i:[A-Z])))*)'
 
     # Separators between components
     sep = r'[\s\.:]+'
@@ -241,17 +253,24 @@ _VERSE_LIST_RE = re.compile(r'\d+')
 def _parse_verse_field(verse_str: str | None) -> tuple[int | None, int | None]:
     """
     Parse verse field like "13", "13-17", "13, 14, 15" into (verse_start, verse_end).
-    Multi-verse lists return (first, last).
+    A range, or a list of consecutive verses, returns its span; a list with a
+    gap ("13, 28") returns just the first verse rather than a fake 13-28 range.
     Returns (None, None) for chapter-level references.
     """
     if not verse_str:
         return None, None
-    nums = [int(n) for n in _VERSE_LIST_RE.findall(verse_str)]
-    if not nums:
+    items = [[int(n) for n in _VERSE_LIST_RE.findall(item)] for item in verse_str.split(",")]
+    items = [nums for nums in items if nums]
+    if not items:
         return None, None
-    first, last = nums[0], nums[-1]
+    first = items[0][0]
+    last = items[0][-1]
+    for nums in items[1:]:
+        if nums[0] != last + 1:
+            break
+        last = nums[-1]
     # Treat "n-n" (same verse repeated) as a single verse
-    return first, (last if last != first else None)
+    return first, (last if last > first else None)
 
 
 def _resolve_book(raw: str) -> dict | None:
@@ -279,81 +298,94 @@ def _resolve_book(raw: str) -> dict | None:
 
 # ── Passage window extraction ─────────────────────────────────────────────────
 
+_BLANK_LINE_RE = re.compile(r'\n[ \t]*\n')
+
+# Blank-line positions of the most recently scanned text. Each parser calls
+# extract_passage_offsets once per citation on the same text, so rescanning it
+# from the top every time would make a file's parse quadratic.
+_blank_line_cache: tuple[str, list[int], list[int]] | None = None
+
+
+def _blank_lines(text: str) -> tuple[list[int], list[int]]:
+    """Return the (starts, ends) of every blank-line run in *text*."""
+    global _blank_line_cache
+    if _blank_line_cache is None or _blank_line_cache[0] is not text:
+        matches = list(_BLANK_LINE_RE.finditer(text))
+        _blank_line_cache = (text, [m.start() for m in matches], [m.end() for m in matches])
+    return _blank_line_cache[1], _blank_line_cache[2]
+
+
 def _find_paragraph_bounds(text: str, char_offset: int) -> tuple[int, int]:
     """
     Given a char_offset within text, find the start and end of the paragraph
     (delimited by blank lines, i.e. two or more consecutive newlines).
     Returns (para_start, para_end) as character offsets.
     """
-    # Blank-line boundary: two or more newlines (possibly with spaces between)
-    blank_line = re.compile(r'\n[ \t]*\n')
-
-    # Find last blank line before offset
-    para_start = 0
-    for m in blank_line.finditer(text, 0, char_offset):
-        para_start = m.end()
-
-    # Find next blank line after offset
-    m = blank_line.search(text, char_offset)
-    para_end = m.start() if m else len(text)
-
+    starts, ends = _blank_lines(text)
+    i = bisect.bisect_right(ends, char_offset)
+    para_start = ends[i - 1] if i else 0
+    j = bisect.bisect_left(starts, char_offset)
+    para_end = starts[j] if j < len(starts) else len(text)
     return para_start, para_end
 
 
 MAX_SENTENCES = 10
 
+# Upper bound on passage length. Ten sentences of ordinary prose is ~1-2k
+# chars, but reference lists and run-on paragraphs can have "sentences" tens
+# of thousands of chars long.
+MAX_PASSAGE_CHARS = 4000
+
 
 def extract_passage_offsets(text: str, citation_offset: int) -> tuple[int, int]:
     """
-    Find the passage window (up to MAX_SENTENCES sentences) surrounding
-    citation_offset. Returns (passage_start_offset, passage_end_offset).
+    Find the passage window (up to MAX_SENTENCES sentences and
+    MAX_PASSAGE_CHARS chars) surrounding citation_offset.
+    Returns (passage_start_offset, passage_end_offset).
     """
-    para_start, para_end = _find_paragraph_bounds(text, citation_offset)
-    para_text = text[para_start:para_end]
+    # An offset sitting in whitespace (e.g. a footnote citation anchored just
+    # after the prose it annotates) belongs with the text before it.
+    offset = min(citation_offset, len(text))
+    if offset == len(text) or text[offset].isspace():
+        while offset > 0 and text[offset - 1].isspace():
+            offset -= 1
 
-    sentences = split_sentences(para_text)
-
-    if len(sentences) <= MAX_SENTENCES:
+    para_start, para_end = _find_paragraph_bounds(text, offset)
+    spans = _sentence_spans(text, para_start, para_end)
+    if not spans:
         return para_start, para_end
 
-    # Find which sentence contains the citation
-    cite_rel = citation_offset - para_start
-    cursor = 0
-    cite_sent_idx = 0
-    for i, sent in enumerate(sentences):
-        # Find this sentence's position in para_text
-        pos = para_text.find(sent, cursor)
-        if pos == -1:
-            pos = cursor
-        if pos <= cite_rel <= pos + len(sent):
-            cite_sent_idx = i
-        cursor = pos + len(sent)
+    # Sentence containing the citation (or the one it immediately follows)
+    idx = next((i for i, (_, e) in enumerate(spans) if e >= offset), len(spans) - 1)
 
-    # Take a window of MAX_SENTENCES centred on cite_sent_idx
-    half = MAX_SENTENCES // 2
-    start_idx = max(0, cite_sent_idx - half)
-    end_idx = min(len(sentences), start_idx + MAX_SENTENCES)
-    start_idx = max(0, end_idx - MAX_SENTENCES)
+    # Window of MAX_SENTENCES centred on idx
+    lo = max(0, idx - MAX_SENTENCES // 2)
+    hi = min(len(spans), lo + MAX_SENTENCES)
+    lo = max(0, hi - MAX_SENTENCES)
 
-    window_sentences = sentences[start_idx:end_idx]
-    window_text = " ".join(window_sentences)
+    # Shed the sentences farthest from the citation until under the cap
+    while hi - lo > 1 and spans[hi - 1][1] - spans[lo][0] > MAX_PASSAGE_CHARS:
+        if idx - lo > hi - 1 - idx:
+            lo += 1
+        else:
+            hi -= 1
+    start, end = spans[lo][0], spans[hi - 1][1]
 
-    # Find the actual char offsets of the window in the original text
-    first_sent = window_sentences[0]
-    last_sent = window_sentences[-1]
-
-    # Locate window start in para_text
-    win_start_rel = para_text.find(first_sent)
-    win_end_rel = para_text.rfind(last_sent)
-    if win_end_rel != -1:
-        win_end_rel += len(last_sent)
-    else:
-        win_end_rel = len(para_text)
-
-    if win_start_rel == -1:
-        win_start_rel = 0
-
-    return para_start + win_start_rel, para_start + win_end_rel
+    if end - start > MAX_PASSAGE_CHARS:
+        # One enormous "sentence": take a window around the citation, trimmed
+        # to word boundaries.
+        start = max(start, offset - MAX_PASSAGE_CHARS // 2)
+        end = min(end, start + MAX_PASSAGE_CHARS)
+        start = max(spans[lo][0], end - MAX_PASSAGE_CHARS)
+        if start > spans[lo][0]:
+            space = text.find(" ", start, offset)
+            if space != -1:
+                start = space + 1
+        if end < spans[hi - 1][1]:
+            space = text.rfind(" ", offset, end)
+            if space != -1:
+                end = space
+    return start, end
 
 
 # ── Footnote detection ────────────────────────────────────────────────────────
@@ -408,6 +440,26 @@ def _find_inline_ref_offset(text: str, footnote_num: int, before_offset: int) ->
 
 # ── Main parsing logic ────────────────────────────────────────────────────────
 
+CCEL_THML_DIR = MANUSCRIPTS_DIR / "ccel_thml"
+
+
+def _ccel_url_from_stem(stem: str) -> str | None:
+    """
+    Derive the CCEL URL from a "{author_id}_{book_id}" filename stem. Both IDs
+    may contain underscores ("burgon_revision_revised" is burgon/revision_revised),
+    so prefer the split that matches a downloaded ThML file; otherwise fall
+    back to splitting at the last underscore.
+    """
+    parts = stem.split("_")
+    for i in range(1, len(parts)):
+        author_id, book_id = "_".join(parts[:i]), "_".join(parts[i:])
+        if (CCEL_THML_DIR / author_id / f"{book_id}.xml").exists():
+            return f"https://ccel.org/ccel/{author_id}/{book_id}"
+    if len(parts) < 2:
+        return None
+    return f"https://ccel.org/ccel/{'_'.join(parts[:-1])}/{parts[-1]}"
+
+
 def _thml_url_exists(conn, ccel_url: str | None) -> bool:
     """Return True if *ccel_url* is already in the DB with source_format='thml'."""
     if not ccel_url:
@@ -438,18 +490,14 @@ def parse_file(
         author, title, year, ccel_url = METADATA[filename]
     else:
         author, title, year = _parse_ccel_header(text)
-        if author:  # has a CCEL header → derive URL from filename
-            stem = path.stem  # e.g. "augustine_confess"
-            last_us = stem.rfind('_')
-            ccel_url = (
-                f"https://ccel.org/ccel/{stem[:last_us]}/{stem[last_us+1:]}"
-                if last_us != -1 else None
-            )
-        else:
-            ccel_url = None
+        # has a CCEL header → derive URL from filename
+        ccel_url = _ccel_url_from_stem(path.stem) if author else None
 
     if skip_thml and not dry_run and _thml_url_exists(conn, ccel_url):
         print(f"\nSkipping: {filename}  (ThML version already in DB: {ccel_url})")
+        # Drop any rows left from parsing this file before the ThML existed
+        delete_manuscripts_for_file(conn, filename)
+        conn.commit()
         return 0
 
     print(f"\nParsing: {filename}")
@@ -486,10 +534,15 @@ def parse_file(
             except ValueError:
                 continue
 
-        if chapter is None or chapter < 1 or chapter > book["chapters"]:
+        if chapter is None:
             continue
 
         verse_start, verse_end = _parse_verse_field(raw_verse)
+        book, chapter, verse_start = remap_versification(book, chapter, verse_start)
+        checked = validate_ref(book, chapter, verse_start, verse_end)
+        if checked is None:
+            continue
+        verse_start, verse_end = checked
 
         citation_offset = m.start()
 

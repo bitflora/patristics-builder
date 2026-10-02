@@ -26,7 +26,9 @@ from lxml import etree
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from bible_data import BY_NAME, ABBREV_LOOKUP, BOOKS
+from bible_data import (ABBREV_LOOKUP, BOOKS, BY_SLUG, greek_psalm_to_hebrew,
+                        remap_versification, roman_to_int, validate_ref)
+from verse_counts import max_verse
 from db import (get_connection, create_schema, delete_refs_for_manuscript,
                 delete_manuscripts_for_file, upsert_manuscript, DB_PATH)
 from parser import extract_passage_offsets, _normalize_creator
@@ -156,9 +158,28 @@ for _b in BOOKS:
         _NAME_LOOKUP["revelations"] = _b
         _NAME_LOOKUP["apocalypse"] = _b
 
+# CCEL's own book codes (OSIS-style) that neither the names nor abbrevs cover.
+# The Kingdoms books are the Greek/Vulgate names for Samuel and Kings.
+for _code, _slug in {
+    "song":   "song-of-solomon",
+    "sus":    "susanna",
+    "prazar": "prayer-of-azariah",
+    "prman":  "prayer-of-manasseh",
+    "1kgdms": "1-samuel",
+    "2kgdms": "2-samuel",
+    "3kgdms": "1-kings",
+    "4kgdms": "2-kings",
+}.items():
+    _NAME_LOOKUP[_code] = BY_SLUG[_slug]
+
 # Merge abbreviation lookup as well (lower priority)
 for _k, _v in ABBREV_LOOKUP.items():
     _NAME_LOOKUP.setdefault(_k, _v)
+
+# Roman-numeral book prefix: "iTim" → "1 tim", "iiJohn" → "2 john". Matched
+# case-sensitively so that ordinary names like "Isa" are never split.
+_ROMAN_PREFIX_RE = re.compile(r"^(iii|ii|i)(?=[A-Z])")
+_ROMAN_PREFIX_NUM = {"i": "1", "ii": "2", "iii": "3"}
 
 
 def _resolve_book_name(name: str) -> dict | None:
@@ -176,6 +197,12 @@ def _resolve_book_name(name: str) -> dict | None:
     spaced = _NUM_PREFIX_RE.sub(r"\1 \2", lower)
     if spaced != lower and spaced in _NAME_LOOKUP:
         return _NAME_LOOKUP[spaced]
+
+    m = _ROMAN_PREFIX_RE.match(name)
+    if m:
+        arabic = f"{_ROMAN_PREFIX_NUM[m.group(1)]} {lower[m.end():]}"
+        if arabic in _NAME_LOOKUP:
+            return _NAME_LOOKUP[arabic]
 
     return None
 
@@ -198,10 +225,10 @@ def _load_xml(path: Path) -> etree._Element | None:
 
 def _extract_metadata(root: etree._Element) -> dict:
     """
-    Extract author, title, year, author_id, book_id from <ThML.head>.
+    Extract author, title, year from <ThML.head>.
     Returns a dict with those keys (values may be None if not found).
     """
-    result = {"author": None, "title": None, "year": None, "author_id": None, "book_id": None}
+    result = {"author": None, "title": None, "year": None}
 
     def find_text(tag: str) -> str | None:
         # Search anywhere in document for the given local tag name
@@ -243,9 +270,6 @@ def _extract_metadata(root: etree._Element) -> dict:
         raw_creator = find_text("DC.Creator")
         if raw_creator:
             result["author"] = _normalize_creator(raw_creator)
-
-    result["author_id"] = find_text("authorID")
-    result["book_id"] = find_text("bookID")
 
     # Year: prefer sub="Original"/"Written"/"Composed" (historical composition date);
     # fall back to sub="Published" only if it looks like a historical print date (< 1970);
@@ -322,6 +346,13 @@ class _TextBuilder:
             self._offset += len(text)
 
     def walk(self, el: etree._Element, in_skip: bool = False) -> None:
+        if callable(el.tag):
+            # Comment / processing instruction: its .text is markup noise
+            # (e.g. CCEL's "added reason=AutoIndexing"), but its tail is prose.
+            if not in_skip:
+                self._append(el.tail)
+            return
+
         tag = _local(el.tag)
         entering_skip = tag in _SKIP_CONTENT_TAGS
         skip_content = in_skip or entering_skip
@@ -354,50 +385,188 @@ class _TextBuilder:
 
 # ── Parsed-attribute citation decoding ───────────────────────────────────────
 
-def _parse_parsed_attr(parsed: str) -> list[dict]:
+# Ranges spanning more chapters than this are surveys ("Gen. 1-50"), not
+# citations of each chapter; only their first chapter is recorded.
+MAX_CHAPTER_SPAN = 5
+
+# No book has this many chapters: such a number is a year, page or column
+# ("Mar. 16, 1895", "Col. 1614"), so the whole scripRef is a false positive.
+_IMPOSSIBLE_CHAPTER = 200
+_DATE_RE = re.compile(r"^\s*Mar(?:ch)?\.?\s+\d{1,2},?\s+\d{4}\b")
+
+# Roman numerals of 101+ in the human-readable 'passage' attribute. CCEL's
+# tagger drops their leading "c" ("Ps. civ. 24" → parsed as Ps 4:24).
+_HUNDREDS_ROMAN_RE = re.compile(r"\b(c[clxvi]+)\b", re.IGNORECASE)
+_ANY_ROMAN_RE = re.compile(r"\b([clxvi]+)\b", re.IGNORECASE)
+
+# Douay "1 Kings" is 1 Samuel; CCEL tags it vul|1Kgs without converting.
+_DOUAY_1KINGS_RE = re.compile(r"^\s*(?:1|I)\s*K", re.IGNORECASE)
+
+
+def _hundreds_fixups(passage: str | None) -> dict[int, int]:
+    """
+    Map each chapter number CCEL may have produced by dropping a leading "c"
+    to the real chapter, e.g. {4: 104} for "Ps. civ. 24". Chapters that also
+    appear as their own numeral in the passage ("Ps. iv. 4; civ. 4") are left
+    alone, since we can't tell which segment is which.
+    """
+    if not passage:
+        return {}
+    plain = {roman_to_int(m) for m in _ANY_ROMAN_RE.findall(passage)}
+    fixups = {}
+    for numeral in _HUNDREDS_ROMAN_RE.findall(passage):
+        value = roman_to_int(numeral)
+        if value and 100 < value <= 150 and value - 100 not in plain:
+            fixups[value - 100] = value
+    return fixups
+
+
+def _decode_segments(parsed: str) -> list[dict]:
+    """Split a 'parsed' attribute into raw segments with the book resolved."""
+    segs = []
+    for segment in parsed.split(";"):
+        parts = segment.strip().split("|")
+        if len(parts) == 7 and parts[6] == "":
+            parts.pop()  # stray trailing "|"
+        if len(parts) != 6:
+            continue
+        version, book_name, *nums = parts
+        book = _resolve_book_name(book_name)
+        if book is None:
+            continue
+        try:
+            fc, fv, tc, tv = (int(n) for n in nums)
+        except ValueError:
+            continue
+        segs.append({"version": version.lower(), "book_name": book_name.lower(),
+                     "book": book, "fc": fc, "fv": fv, "tc": tc, "tv": tv})
+    return segs
+
+
+def _is_chapter_only(seg: dict) -> bool:
+    return seg["fv"] == seg["tc"] == seg["tv"] == 0
+
+
+def _merge_comma_verses(segs: list[dict]) -> list[dict]:
+    """
+    "Mt 5,45" means Matthew 5:45, but CCEL tags it as chapters 5 and 45. A
+    chapter-only segment past the book's last chapter that follows a segment
+    of the same book is really a verse in that segment's chapter.
+    """
+    out: list[dict] = []
+    for seg in segs:
+        prev = out[-1] if out else None
+        if (prev is not None and seg["book"] is prev["book"] and _is_chapter_only(seg)
+                and seg["fc"] > seg["book"]["chapters"]):
+            limit = max_verse(seg["book"]["slug"], prev["fc"])
+            if limit is not None and seg["fc"] <= limit:
+                if _is_chapter_only(prev):
+                    out.pop()  # the "5" in "5,45" was the chapter, not a citation of it
+                seg = {**seg, "fc": prev["fc"], "fv": seg["fc"]}
+        out.append(seg)
+    return out
+
+
+def _expand_range(sc: int, sv: int | None, ec: int, ev: int | None,
+                  slug: str) -> list[tuple[int, int | None, int | None]]:
+    """
+    Turn a start point (sc, sv) and end point (ec, ev) into per-chapter
+    (chapter, verse_start, verse_end) tuples. A verse of None means
+    "whole chapter" at the start, or "to the end of the chapter" at the end.
+    """
+    if ec == sc:
+        return [(sc, sv, ev)]
+    if ec < sc or ec - sc + 1 > MAX_CHAPTER_SPAN:
+        return [(sc, sv, None)]
+    rows = [(sc, sv, max_verse(slug, sc) if sv else None)]
+    rows += [(ch, None, None) for ch in range(sc + 1, ec)]
+    rows.append((ec, 1, ev) if ev else (ec, None, None))
+    return rows
+
+
+def _parse_parsed_attr(parsed: str, passage: str | None = None) -> list[dict]:
     """
     Decode a ThML 'parsed' attribute string into a list of citation dicts.
 
     Format: version|Book|fromChapter|fromVerse|toChapter|toVerse
-    Multiple citations separated by semicolons.
+    Multiple citations separated by semicolons. *passage* is the scripRef's
+    human-readable 'passage' attribute, used to repair CCEL tagging errors.
 
     Returns a list of dicts with keys:
         book_entry, chapter, verse_start, verse_end
-    Segments that cannot be resolved are silently skipped.
+    Chapter and verse numbers are converted to KJV versification, and a range
+    across chapters yields one dict per chapter. Segments that cannot be
+    resolved, or that point at verses that don't exist, are skipped.
     """
-    results = []
-    for segment in parsed.split(";"):
-        segment = segment.strip()
-        if not segment:
-            continue
-        parts = segment.split("|")
-        if len(parts) != 6:
-            continue
-        _version, book_name, from_ch_s, from_v_s, to_ch_s, to_v_s = parts
-        book_entry = _resolve_book_name(book_name)
-        if book_entry is None:
-            continue
-        try:
-            from_ch = int(from_ch_s)
-            from_v = int(from_v_s)
-            to_v = int(to_v_s)
-        except ValueError:
-            continue
+    if passage and _DATE_RE.match(passage):
+        return []
+    segs = _decode_segments(parsed)
+    if any(max(s["fc"], s["tc"]) >= _IMPOSSIBLE_CHAPTER for s in segs):
+        return []
+    segs = _merge_comma_verses(segs)
+    fixups = _hundreds_fixups(passage)
 
+    results = []
+    for seg in segs:
+        book = seg["book"]
+        from_ch = seg["fc"]
         if from_ch < 1:
             continue  # whole-book reference; no useful chapter to store
 
-        verse_start = from_v if from_v > 0 else None
-        verse_end = to_v if (to_v > 0 and to_v != from_v) else None
+        # End point of the range; (from_ch, None) means a single verse/chapter.
+        to_ch = seg["tc"] if seg["tc"] >= 1 else from_ch
+        start_v = seg["fv"] or None
+        end_v = seg["tv"] or None
+        if to_ch == from_ch and end_v == start_v:
+            end_v = None
+        single = to_ch == from_ch and end_v is None
 
-        results.append(
-            {
-                "book_entry": book_entry,
-                "chapter": from_ch,
-                "verse_start": verse_start,
-                "verse_end": verse_end,
-            }
-        )
+        if from_ch in fixups:
+            if to_ch == from_ch:
+                to_ch = fixups[from_ch]
+            from_ch = fixups[from_ch]
+
+        if (seg["version"] == "vul" and seg["book_name"] == "1kgs"
+                and _DOUAY_1KINGS_RE.match(passage or "")):
+            book = BY_SLUG["1-samuel"]
+        elif seg["version"] == "vul" and seg["book_name"] in ("1esd", "2esd"):
+            # Vulgate 1 & 2 Esdras are Ezra and Nehemiah
+            book = BY_SLUG["ezra" if seg["book_name"] == "1esd" else "nehemiah"]
+        elif seg["version"].startswith("lxx") and seg["book_name"] == "2esd":
+            # LXX Esdras B is Ezra (1-10) + Nehemiah (11-23)
+            if from_ch > 10 and to_ch > 10:
+                book, from_ch, to_ch = BY_SLUG["nehemiah"], from_ch - 10, to_ch - 10
+            elif from_ch <= 10 and to_ch <= 10:
+                book = BY_SLUG["ezra"]
+
+        if book["slug"] == "psalms" and seg["version"].startswith(("vul", "lxx")):
+            from_ch, start_v = greek_psalm_to_hebrew(from_ch, start_v)
+            if single:
+                to_ch = from_ch
+            else:
+                to_ch, end_v = greek_psalm_to_hebrew(to_ch, end_v)
+        else:
+            orig = book
+            book, from_ch, start_v = remap_versification(orig, from_ch, start_v)
+            if single:
+                to_ch = from_ch
+            else:
+                end_book, to_ch, end_v = remap_versification(orig, to_ch, end_v)
+                if end_book is not book:
+                    to_ch, end_v = from_ch, None
+
+        for ch, vs, ve in _expand_range(from_ch, start_v, to_ch, end_v, book["slug"]):
+            checked = validate_ref(book, ch, vs, ve)
+            if checked is None:
+                continue
+            results.append(
+                {
+                    "book_entry": book,
+                    "chapter": ch,
+                    "verse_start": checked[0],
+                    "verse_end": checked[1],
+                }
+            )
     return results
 
 
@@ -504,7 +673,7 @@ def _parse_thml_subworks(
             continue
         ms_id = seen_authors.get(author_id, 0) if not dry_run else 0
 
-        citations = _parse_parsed_attr(parsed_attr)
+        citations = _parse_parsed_attr(parsed_attr, el.get("passage"))
         if not citations:
             continue
 
@@ -572,16 +741,10 @@ def parse_thml_file(
     author = meta["author"]
     title = meta["title"]
     year = meta["year"]
-    author_id = meta["author_id"]
-    book_id = meta["book_id"]
-
-    # Fall back to directory/stem if metadata is absent
-    if not author_id:
-        author_id = xml_path.parent.name
-    if not book_id:
-        book_id = xml_path.stem
-
-    ccel_url = f"https://ccel.org/ccel/{author_id}/{book_id}"
+    # The file was downloaded from ccel.org/ccel/{dir}/{stem}.xml, so the path
+    # names the work. The in-file <bookID> can instead name a parent
+    # collection (e.g. "morefathers" for Law's "A Practical Treatise").
+    ccel_url = f"https://ccel.org/ccel/{xml_path.parent.name}/{xml_path.stem}"
     # Filename relative to project root — this is what the builder will read
     txt_path = xml_path.with_suffix(".txt")
     rel_filename = str(txt_path.relative_to(PROJECT_ROOT)).replace("\\", "/")
@@ -628,7 +791,7 @@ def parse_thml_file(
         if not parsed_attr:
             continue  # only process structurally-tagged citations
 
-        citations = _parse_parsed_attr(parsed_attr)
+        citations = _parse_parsed_attr(parsed_attr, el.get("passage"))
         if not citations:
             continue
 

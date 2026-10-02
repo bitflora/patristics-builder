@@ -16,6 +16,8 @@ Abbreviation notes:
   - "st " prefix handling (St John, St Luke) is handled in the parser
 """
 
+from verse_counts import max_verse
+
 BOOKS = [
     # ── Old Testament ────────────────────────────────────────────────────────
     {"name": "Genesis",          "slug": "genesis",          "order":  1, "chapters": 50,
@@ -149,11 +151,11 @@ BOOKS = [
     {"name": "2 Corinthians",    "slug": "2-corinthians",    "order": 63, "chapters": 13,
      "abbrevs": ["2 cor", "2cor", "ii cor", "2 co", "2co"]},
     {"name": "Galatians",        "slug": "galatians",        "order": 64, "chapters":  6,
-     "abbrevs": ["gal", "ga"]},
+     "abbrevs": ["gal"]},
     {"name": "Ephesians",        "slug": "ephesians",        "order": 65, "chapters":  6,
      "abbrevs": ["eph", "ephes"]},
     {"name": "Philippians",      "slug": "philippians",      "order": 66, "chapters":  4,
-     "abbrevs": ["phil", "php", "pp"]},
+     "abbrevs": ["phil", "php"]},
     {"name": "Colossians",       "slug": "colossians",       "order": 67, "chapters":  4,
      "abbrevs": ["col"]},
     {"name": "1 Thessalonians",  "slug": "1-thessalonians",  "order": 68, "chapters":  5,
@@ -240,6 +242,108 @@ def is_roman(s: str) -> bool:
     return roman_to_int(s) is not None
 
 
+# How far a verse number may run past the KJV's last verse before we call it
+# bogus. Hebrew/Vulgate Psalms count the superscription as verse 1, and other
+# versifications differ from the KJV by a verse here and there.
+_VERSE_SLACK = {"psalms": 2}
+_DEFAULT_VERSE_SLACK = 1
+
+
+def greek_psalm_to_hebrew(ch: int, v: int | None) -> tuple[int, int | None]:
+    """
+    Convert an LXX/Vulgate Psalm reference to Hebrew/English numbering.
+    Verse numbers are only shifted where Psalms were split or merged; the
+    usual off-by-one from counted superscriptions is left alone.
+    """
+    if ch == 9:
+        return (10, v - 21) if v and v >= 22 else (9, v)
+    if ch == 113:
+        return (115, v - 8) if v and v >= 9 else (114, v)
+    if ch == 114:
+        return 116, v
+    if ch == 115:
+        return 116, (v + 9 if v else v)
+    if ch == 146:
+        return 147, v
+    if ch == 147:
+        return 147, (v + 11 if v else v)
+    if 10 <= ch <= 145:
+        return ch + 1, v
+    return ch, v
+
+
+def remap_versification(book: dict, ch: int, v: int | None) -> tuple[dict, int, int | None]:
+    """
+    Translate a reference that cannot exist in KJV versification, but can in
+    the Greek/Latin/Hebrew ones the fathers and their translators used, into
+    its KJV equivalent. References that fit the KJV are returned unchanged.
+    """
+    slug = book["slug"]
+    if slug == "psalms" and v:
+        limit = max_verse(slug, ch)
+        if limit is not None and v > limit + _VERSE_SLACK["psalms"]:
+            # "Ps. 118:105" only fits as Vulgate 118 = Hebrew 119.
+            hch, hv = greek_psalm_to_hebrew(ch, v)
+            hlimit = max_verse(slug, hch)
+            if hlimit is not None and hv <= hlimit + _VERSE_SLACK["psalms"]:
+                return book, hch, hv
+    elif slug == "daniel":
+        if ch == 13:
+            return BY_SLUG["susanna"], 1, v
+        if ch == 14:
+            return BY_SLUG["bel"], 1, v
+        if ch == 3 and v and v > 30:
+            # Greek Daniel 3:24-90 is the Prayer of Azariah / Song of the Three;
+            # 3:91-97 is KJV 3:24-30.
+            if v <= 90:
+                return BY_SLUG["prayer-of-azariah"], 1, v - 23
+            if v <= 97:
+                return book, 3, v - 67
+    elif slug == "ecclesiastes" and 12 < ch <= BY_SLUG["sirach"]["chapters"]:
+        return BY_SLUG["sirach"], ch, v  # "Eccles. xxiv." can only be Ecclesiasticus
+    elif slug == "malachi" and ch == 3 and v and v >= 19:
+        return book, 4, v - 18  # Hebrew/LXX Mal 3:19-24 = KJV 4:1-6
+    elif slug == "joel" and ch == 4:
+        return book, 3, v       # Hebrew Joel 4 = KJV 3
+    return book, ch, v
+
+
+def validate_ref(book: dict, chapter: int, verse_start: int | None,
+                 verse_end: int | None) -> tuple[int | None, int | None] | None:
+    """
+    Sanity-check a citation against the book's real shape.
+
+    Returns the (possibly cleaned) (verse_start, verse_end), or None if the
+    citation cannot be right and should be dropped: the chapter does not exist,
+    or the starting verse is past the end of the chapter. A shorthand
+    verse_end ("21-6") is expanded; an overlong or backwards one is trimmed.
+    """
+    if not 1 <= chapter <= book["chapters"]:
+        return None
+    if verse_start is None:
+        return None, None
+    if verse_start < 1:
+        return None
+
+    if verse_end is not None and verse_end < verse_start:
+        # Shorthand range: "21-6" means 21-26, "134-7" means 134-137
+        start_s, end_s = str(verse_start), str(verse_end)
+        expanded = int(start_s[:-len(end_s)] + end_s) if len(end_s) < len(start_s) else 0
+        verse_end = expanded if expanded > verse_start else None
+
+    limit = max_verse(book["slug"], chapter)
+    if limit is not None:
+        slack = _VERSE_SLACK.get(book["slug"], _DEFAULT_VERSE_SLACK)
+        if verse_start > limit + slack:
+            return None
+        if verse_end is not None and verse_end > limit + slack:
+            verse_end = max(limit, verse_start)
+
+    if verse_end is not None and verse_end <= verse_start:
+        verse_end = None
+    return verse_start, verse_end
+
+
 if __name__ == "__main__":
     print(f"Total books: {len(BOOKS)}")
     print(f"Total abbreviations registered: {len(ABBREV_LOOKUP)}")
@@ -251,4 +355,15 @@ if __name__ == "__main__":
     assert roman_to_int("viii") == 8
     assert roman_to_int("xiii") == 13
     assert roman_to_int("cl") == 150
+    ps = BY_SLUG["psalms"]
+    assert validate_ref(ps, 4, 8, None) == (8, None)
+    assert validate_ref(ps, 4, 9, None) == (9, None)       # Hebrew/Vulgate numbering
+    assert validate_ref(ps, 4, 141, None) is None
+    assert validate_ref(ps, 151, 1, None) is None
+    assert validate_ref(ps, 4, 6, 40) == (6, 8)
+    assert validate_ref(ps, 4, 6, 2) == (6, None)
+    assert validate_ref(BY_SLUG["matthew"], 5, 21, 6) == (21, 26)    # shorthand range
+    assert validate_ref(ps, 119, 134, 7) == (134, 137)
+    assert validate_ref(ps, 119, 21, 19) == (21, None)
+    assert validate_ref(BY_SLUG["tobit"], 1, 99, None) == (99, None)  # no verse data
     print("All assertions passed.")

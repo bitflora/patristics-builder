@@ -81,7 +81,8 @@ Indexed on `(book_slug, chapter)` and `(manuscript_id)`.
 
 ### Python Modules (`src/`)
 
-- `bible_data.py` — Authoritative Bible book list with abbreviation patterns for regex matching
+- `bible_data.py` — Authoritative Bible book list with abbreviation patterns for regex matching; `validate_ref()` / `remap_versification()` sanity-check citations and convert Greek/Vulgate numbering to KJV
+- `verse_counts.py` — Generated KJV verses-per-chapter table (66 books) used for validation
 - `db.py` — SQLite schema creation, `upsert_manuscript()`, `delete_refs_for_manuscript()`
 - `parser.py` — Main citation parser; regex patterns handle Roman numerals, abbreviations, verse ranges
 - `parse_thml.py` — Parses `<scripRef>` elements in ThML XML manuscripts
