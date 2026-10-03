@@ -16,6 +16,10 @@
  */
 
 const DATA_ROOT = "data/static";
+// Data files are served `immutable` (vercel.json), so browsers never revalidate
+// them. Bump this whenever the builder's output format changes, or returning
+// visitors will pair new app.js with stale cached data.
+const DATA_VERSION = 2;
 
 // ── URL Hash Navigation ───────────────────────────────────────────────────────
 let _restoringFromHash = false;
@@ -86,7 +90,7 @@ sidebarOverlay.addEventListener('click', closeSidebar);
 
 // ── Fetch helpers ─────────────────────────────────────────────────────────────
 async function fetchJSON(url) {
-  const resp = await fetch(url);
+  const resp = await fetch(`${url}?v=${DATA_VERSION}`);
   if (!resp.ok) throw new Error(`Failed to fetch ${url}: ${resp.status}`);
   // If the server set Content-Encoding: zstd the browser already decompressed;
   // otherwise (e.g. simple static servers) decompress the raw zstd stream manually.

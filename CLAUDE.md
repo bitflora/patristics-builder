@@ -92,4 +92,5 @@ Indexed on `(book_slug, chapter)` and `(manuscript_id)`.
 - The SQLite database (`data/`) and manuscript files (`manuscripts/`) are gitignored and must exist locally to run the builder
 - Python offsets are Unicode code points; Go uses `[]rune` to match this indexing
 - Compression is zstd level 20; old gzip/uncompressed files are cleaned up by the builder automatically
+- Data files are served `immutable` for a year (`viewer/vercel.json`); bump `DATA_VERSION` in `viewer/app.js` whenever the builder's output format changes so returning visitors don't mix new code with stale cached data
 - The pure Go SQLite driver (`modernc.org/sqlite`) is used — no CGo required
