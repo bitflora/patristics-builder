@@ -59,13 +59,13 @@ manuscripts/ (text files)
     + data/patristics.db (SQLite)
          ↓ Go builder
 viewer/data/static/
-    index.json.zst           — book list, chapter ref counts, works metadata
-    bible/{slug}.json.zst    — all refs for a book (by chapter)
-    manuscripts/{id}.json.zst — all refs from a single work
-    passages.json.zst        — global passage text dictionary (deduplicated)
+    index.json.zst                — book list, chapter ref counts, works metadata (+ per-work book_counts for viz)
+    bible/{slug}/{ch}.json.zst    — all refs for one chapter, passage text inlined
+    manuscripts/{id}.json.zst     — all refs from a single work; no text, each ref's `i` indexes its chapter file's refs
+    kjv/{slug}.json.zst           — KJV text per book (split from hand-placed kjv.json.zst)
 ```
 
-Passages are stored once in `passages.json.zst` and referenced by key (`{filename}_{start}_{end}`) in book and manuscript files.
+The front page (viz) needs only `index.json.zst`; a chapter view needs one chapter file (plus `kjv/{slug}`). Passage text lives only in chapter files (a passage cited from several chapters is repeated in each); the Works view lazily fetches the chapter files for cards scrolled into view. A single global passage dictionary was dropped because it forced a 65 MB download up front; per-chapter files compress worse than it did (overlapping windows from adjacent citations end up in different files), so text is deliberately kept out of work files to bound total size.
 
 ### Database Schema
 
@@ -76,7 +76,7 @@ Indexed on `(book_slug, chapter)` and `(manuscript_id)`.
 ### Go Builder Internals (`cmd/builder/`)
 
 - `main.go` — Entry point; opens DB, selectively loads only referenced manuscript files as `[]rune` slices, calls build stages in order, explicitly frees cache and runs `runtime.GC()` before parallel phase
-- `build.go` — Core logic: `buildPassages()`, `buildBook()`, `buildAll()` (parallel, semaphore-bounded to CPU count), `buildWorks()`, `buildIndex()`
+- `build.go` — Core logic: `buildPassages()` (in-memory text registry), `buildBook()` (per-chapter files), `buildAll()` (parallel, semaphore-bounded to CPU count), `buildWorks()`, `buildIndex()`
 - `bible_data.go` — Canonical 82-book Bible metadata (OT + Deuterocanon + NT) with slugs, chapter counts, and order
 
 ### Python Modules (`src/`)

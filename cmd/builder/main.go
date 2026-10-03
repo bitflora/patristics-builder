@@ -11,8 +11,9 @@ for the viewer. Run from the repository root:
 Outputs:
 
 	viewer/data/static/index.json.zst                      — book list with per-chapter ref counts
-	viewer/data/static/bible/{book-slug}/{ch}.json.zst     — all references for a chapter
-	viewer/data/static/manuscripts/{id}.json.zst           — all references from a single work
+	viewer/data/static/bible/{book-slug}/{ch}.json.zst     — all references for a chapter, with passage text
+	viewer/data/static/manuscripts/{id}.json.zst           — all references from a single work (text lives in the chapter files)
+	viewer/data/static/kjv/{book-slug}.json.zst            — KJV verse text, split from kjv.json.zst
 */
 package main
 
@@ -81,18 +82,18 @@ func main() {
 	fmt.Printf("Loaded %d manuscript files into memory.\n", len(cache)/2)
 
 	gp := buildPassages(db, cache)
-	writePassages(gp)
 
 	// All passages are interned in gp. Subsequent gp.intern() calls hit the
 	// fast path without touching cache — release it before the parallel phase.
 	cache = nil
 	runtime.GC()
 
-	buildAll(db, cache, *bookFlag, gp)
+	refIndex := buildAll(db, cache, *bookFlag, gp)
 	buildIndex(db, *bookFlag)
 	if *bookFlag == "" {
-		buildWorks(db, cache, gp)
+		buildWorks(db, refIndex)
 	}
+	splitKJV()
 	cleanupUncompressed()
 }
 
@@ -191,8 +192,37 @@ func writeZstJSON(path string, payload any) error {
 	return zw.Close()
 }
 
+// splitKJV splits the hand-placed kjv.json.zst ({slug: {ch: {v: text}}}) into
+// one file per book so the viewer only downloads the book being read.
+func splitKJV() {
+	src := filepath.Join(staticDir, "kjv.json.zst")
+	f, err := os.Open(src)
+	if err != nil {
+		fmt.Printf("Skipping KJV split: %v\n", err)
+		return
+	}
+	defer f.Close()
+	zr, err := zstd.NewReader(f)
+	if err != nil {
+		log.Fatalf("reading %s: %v", src, err)
+	}
+	defer zr.Close()
+	var kjv map[string]json.RawMessage
+	if err := json.NewDecoder(zr).Decode(&kjv); err != nil {
+		log.Fatalf("decoding %s: %v", src, err)
+	}
+	for slug, chapters := range kjv {
+		outPath := filepath.Join(staticDir, "kjv", slug+".json.zst")
+		if err := writeZstJSON(outPath, chapters); err != nil {
+			log.Fatalf("writing %s: %v", outPath, err)
+		}
+	}
+	fmt.Printf("Split KJV into %d book files.\n", len(kjv))
+}
+
 func cleanupUncompressed() {
 	removed := 0
+	bibleDir := filepath.Join(staticDir, "bible")
 	filepath.WalkDir(staticDir, func(path string, d fs.DirEntry, _ error) error {
 		if d.IsDir() {
 			return nil
@@ -203,28 +233,14 @@ func cleanupUncompressed() {
 			removed++
 			return nil
 		}
-		// Remove old per-chapter bible files (bible/{slug}/{ch}.json.zst).
-		// New format is bible/{slug}.json.zst (flat, no subdirectory).
-		rel, err := filepath.Rel(filepath.Join(staticDir, "bible"), path)
-		if err == nil && !strings.HasPrefix(rel, "..") && strings.Count(rel, string(filepath.Separator)) == 1 && strings.HasSuffix(path, ".json.zst") {
+		// Remove the old global passage dictionary and old flat per-book files
+		// (bible/{slug}.json.zst); text now lives in bible/{slug}/{ch}.json.zst.
+		if path == filepath.Join(staticDir, "passages.json.zst") || filepath.Dir(path) == bibleDir {
 			os.Remove(path)
 			removed++
 		}
 		return nil
 	})
-	// Remove empty subdirectories left behind under bible/
-	bibleDir := filepath.Join(staticDir, "bible")
-	if entries, err := os.ReadDir(bibleDir); err == nil {
-		for _, e := range entries {
-			if e.IsDir() {
-				subdir := filepath.Join(bibleDir, e.Name())
-				if contents, err := os.ReadDir(subdir); err == nil && len(contents) == 0 {
-					os.Remove(subdir)
-					removed++
-				}
-			}
-		}
-	}
 	if removed > 0 {
 		fmt.Printf("Cleaned up %d old/uncompressed file(s).\n", removed)
 	}
